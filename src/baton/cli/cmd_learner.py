@@ -10,9 +10,10 @@ import argparse
 import re
 from typing import TYPE_CHECKING, Any
 
-from ..adapters.db import open_store
+from ..adapters.db import store_scope
 from ..adapters.docs import VIDEO_LINK_BLOCKS, find_video_link, open_docs
 from ..adapters.docs.base import PreservePolicy
+from ..domain.localdate import DateFormat
 from ..domain.models import WEEKDAYS, Learner, Session, Work
 from ..domain.notion_urls import detect_week, parse_page_id
 from ..domain.prep import SectionRules
@@ -22,7 +23,13 @@ from ..domain.whenever import today_in
 from ..errors import BatonError, ConfigError, GateError, NeedsHumanError, UpstreamError, UsageError
 from ..exits import Exit
 from ..pipelines.learner import LearnerHistory, PublishedPieceUpdater, SessionView
-from ..pipelines.recording import attach_work, list_candidates, recording_blocks
+from ..pipelines.recording import (
+    attach_work,
+    complete_recording_work,
+    compose_recording,
+    list_candidates,
+    recording_blocks,
+)
 from ..pipelines.staging import PublishedRecord
 from .cmd_calendar import _scheduler
 from .naming import warn_if_inactive
@@ -181,7 +188,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     rename.add_argument("--dry-run", action="store_true", help="Show the change, and stop.")
     rename.set_defaults(handler=handle_rename)
 
-    add_work = group.add_parser("add-work", help="Record a finished performance.")
+    add_work = group.add_parser(
+        "add-work",
+        help="Record a finished performance, optionally completing its lesson.",
+    )
     add_work.add_argument("name", metavar="NAME")
     add_work.add_argument("--title", required=True)
     add_work.add_argument("--type", default="performance", help="performance, cover, exam, …")
@@ -190,6 +200,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--drive-link", default="", help="A second home of the recording (Drive file)."
     )
     add_work.add_argument("--date", default="", metavar="YYYY-MM-DD")
+    add_work.add_argument(
+        "--session",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Treat this work as the completed lesson N; omit it to record library work only.",
+    )
     add_work.add_argument(
         "--dry-run", action="store_true", help="Show what would be recorded, and stop."
     )
@@ -221,6 +238,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "the old push wrote, under the same heading, onto the session "
             "In progress by default or --session N. Links already on the page "
             "are not written twice, and nothing else on the page is removed."
+            " With --complete it also marks the lesson done and publishes the "
+            "recording as that session's deliverable."
         ),
     )
     attach.add_argument("name", metavar="NAME")
@@ -234,6 +253,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     attach.add_argument(
         "--session", type=int, default=None, help="Defaults to the session in progress."
+    )
+    attach.add_argument(
+        "--complete",
+        action="store_true",
+        help="Also finish the session and publish this recording as the lesson.",
     )
     attach.add_argument("--dry-run", action="store_true", help="Report what would be written.")
     attach.set_defaults(handler=handle_attach_work)
@@ -375,10 +399,6 @@ def _require_subcommand(ctx: Context) -> Exit:
 # -- shared plumbing ---------------------------------------------------------
 
 
-def _store(ctx: Context):
-    return open_store(ctx.config)
-
-
 def _next_stale_days(ctx: Context) -> int | None:
     """`learner.next_stale_days`, where `null` means never abandon a page."""
     value = ctx.config.get("learner.next_stale_days", 1)
@@ -411,6 +431,46 @@ def _resolve(ctx: Context, store, name: str):
     )
     warn_if_inactive(ctx, learner)
     return learner
+
+
+def _recording_session(ctx: Context, store, learner: Learner, wanted: int) -> SessionView:
+    """The in-progress session a recording-only lesson will complete."""
+
+    history = _history(ctx, store)
+    view = next((item for item in history.sessions(learner) if item.number == wanted), None)
+    label = ctx.config.label("session")
+    if view is None or not view.session.doc_id:
+        raise UsageError(
+            f"{learner.name} has no {label} {wanted} with a document.",
+            remedy=f'Run `baton learner sessions "{learner.name}"` to see what exists.',
+        )
+    if view.state != "in_progress":
+        raise UsageError(
+            f"{learner.name}'s {label} {wanted} is {view.state or 'unknown'}, not in progress.",
+            remedy="Recording-only publishing replaces a summary only while the session is open.",
+        )
+    if PublishedRecord(ctx.config.state_dir / "published").get(learner.id, wanted) is not None:
+        raise UsageError(
+            f"{learner.name}'s {label} {wanted} already has a published lesson.",
+            remedy="Unpublish that lesson first, or record the work without --session.",
+        )
+    return view
+
+
+def _recording_preview(
+    ctx: Context, learner: Learner, view: SessionView, work: Work
+) -> tuple[str, list[dict[str, Any]]]:
+    """The exact message and page blocks a completed recording will produce."""
+
+    status = open_docs(ctx.config).get_status(view.session.doc_id, with_blocks=False)
+    message = compose_recording(
+        work,
+        learner_name=learner.name,
+        instrument=learner.instrument,
+        date=DateFormat.from_config(ctx.config.section("chat.date")).of_text(work.performed_date),
+        doc_url=status.url,
+    )
+    return message, recording_blocks(work, message=message)
 
 
 def _resolve_including_trashed(ctx: Context, store, name: str):
@@ -448,8 +508,7 @@ def handle_list(ctx: Context) -> Exit:
             "who was moved out of it. Pick one.",
         )
 
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         if ctx.args.trashed:
             everyone = store.list_learners(include_trashed=True)
             learners = [item for item in everyone if item.deleted_at]
@@ -471,8 +530,6 @@ def handle_list(ctx: Context) -> Exit:
             if learners:
                 for slot in store.list_slots():
                     by_learner.setdefault(slot.learner_id, []).append(slot.to_dict())
-    finally:
-        store.close()
 
     if ctx.args.trashed:
         payload = {
@@ -520,14 +577,11 @@ def handle_list(ctx: Context) -> Exit:
 
 
 def handle_show(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         history = _history(ctx, store)
         views = history.sessions(learner)
         payload = history.summarise(learner, views, today=today_in(ctx.config.timezone))
-    finally:
-        store.close()
 
     label = ctx.config.label("session")
     lines = [f"{learner.name}  ({learner.instrument or 'no instrument recorded'})"]
@@ -559,13 +613,10 @@ def handle_show(ctx: Context) -> Exit:
 
 
 def handle_sessions(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         history = _history(ctx, store)
         views = history.sessions(learner)
-    finally:
-        store.close()
 
     label = ctx.config.label("session")
     payload = {
@@ -582,13 +633,10 @@ def handle_sessions(ctx: Context) -> Exit:
 
 
 def handle_latest(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         history = _history(ctx, store)
         view = history.latest_done(history.sessions(learner))
-    finally:
-        store.close()
 
     label = ctx.config.label("session")
     payload: dict[str, Any] = {
@@ -631,14 +679,11 @@ def handle_latest(ctx: Context) -> Exit:
 
 
 def handle_next(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         history = _history(ctx, store)
         views = history.sessions(learner)
         view = history.next_empty(views, today=today_in(ctx.config.timezone))
-    finally:
-        store.close()
 
     label = ctx.config.label("session")
     payload = {
@@ -663,14 +708,11 @@ def handle_next(ctx: Context) -> Exit:
 
 def handle_in_progress(ctx: Context) -> Exit:
     scheduler = _scheduler(ctx)
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         report = scheduler.in_progress(
             store,
             window_days=int(ctx.config.get("learner.in_progress_days", 14)),
         )
-    finally:
-        store.close()
 
     label = ctx.config.label("session")
 
@@ -863,8 +905,7 @@ def handle_add(ctx: Context) -> Exit:
         session_fields, dict.fromkeys(session_extra_keys, ""), setting="db.fields.session"
     )
 
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         existing = store.list_learners()
         wanted = normalise(args.name)
         duplicate = next((p for p in existing if normalise(p.name) == wanted), None)
@@ -930,8 +971,6 @@ def handle_add(ctx: Context) -> Exit:
                     "sessions_written": [s.to_dict() for s in created_sessions],
                 },
             ) from exc
-    finally:
-        store.close()
 
     ctx.report.result(
         {
@@ -964,8 +1003,7 @@ def handle_rename(ctx: Context) -> Exit:
             remedy='Pass --to "New Name".',
         )
 
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, args.name)
         wanted = normalise(new_name)
         duplicate = next((p for p in store.list_learners() if normalise(p.name) == wanted), None)
@@ -984,8 +1022,6 @@ def handle_rename(ctx: Context) -> Exit:
             return Exit.OK
 
         store.rename_learner(learner.id, new_name)
-    finally:
-        store.close()
 
     ctx.report.result(
         {
@@ -1011,8 +1047,7 @@ def handle_trash(ctx: Context) -> Exit:
     history are this command's business to leave exactly as they are.
     Trashing twice is safe and changes nothing further.
     """
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve_including_trashed(ctx, store, ctx.args.name)
         if ctx.args.dry_run:
             ctx.report.result(
@@ -1021,8 +1056,6 @@ def handle_trash(ctx: Context) -> Exit:
             )
             return Exit.OK
         store.trash_learner(learner.id)
-    finally:
-        store.close()
 
     ctx.report.result(
         {"learner": {**learner.to_dict(), "deleted_at": learner.deleted_at or "now"}},
@@ -1037,12 +1070,9 @@ def handle_trash(ctx: Context) -> Exit:
 
 def handle_untrash(ctx: Context) -> Exit:
     """The reverse of `learner trash`. Safe on a learner who was never trashed."""
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve_including_trashed(ctx, store, ctx.args.name)
         store.untrash_learner(learner.id)
-    finally:
-        store.close()
 
     ctx.report.result(
         {"learner": {**learner.to_dict(), "deleted_at": None}},
@@ -1079,8 +1109,7 @@ def handle_edit(ctx: Context) -> Exit:
             remedy="Editable fields: --instrument, --tone, --has-instrument/--no-has-instrument.",
         )
 
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, args.name)
         if args.dry_run:
             ctx.report.result(
@@ -1090,8 +1119,6 @@ def handle_edit(ctx: Context) -> Exit:
             return Exit.OK
         store.update_learner(learner.id, fields)
         fresh = store.get_learner(learner.id)
-    finally:
-        store.close()
 
     written = fresh if fresh is not None else learner
     ctx.report.result(
@@ -1153,12 +1180,9 @@ def _parse_slots(raw_slots: list[str] | None) -> list[tuple[str, str]]:
 
 
 def handle_schedule(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         slots = store.list_slots(learner.id)
-    finally:
-        store.close()
 
     payload = {"learner": learner.to_dict(), "slots": [slot.to_dict() for slot in slots]}
     if not slots:
@@ -1178,8 +1202,7 @@ def handle_schedule_set(ctx: Context) -> Exit:
     held by inactive or trashed learners never clash: they are not coming.
     """
     slots = _parse_slots(ctx.args.slot)
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         others = {
             item.id: item
@@ -1214,8 +1237,6 @@ def handle_schedule_set(ctx: Context) -> Exit:
             )
             return Exit.OK
         written = store.set_slots(learner.id, slots)
-    finally:
-        store.close()
 
     ctx.report.result(
         {"learner": learner.to_dict(), "slots": [slot.to_dict() for slot in written]},
@@ -1225,12 +1246,9 @@ def handle_schedule_set(ctx: Context) -> Exit:
 
 
 def handle_works(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         works = store.list_works(learner.id)
-    finally:
-        store.close()
 
     payload = {"learner": learner.to_dict(), "works": [item.to_dict() for item in works]}
     if not works:
@@ -1247,9 +1265,27 @@ def handle_works(ctx: Context) -> Exit:
 
 
 def handle_add_work(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
+        view = None
+        if ctx.args.session is not None:
+            view = _recording_session(ctx, store, learner, ctx.args.session)
+            if not ctx.args.video_link.strip() and not ctx.args.drive_link.strip():
+                raise GateError(
+                    "A recording-only lesson needs a YouTube or Drive link.",
+                    missing=[
+                        {
+                            "field": "video_link",
+                            "reason": "at least one recording link is required",
+                        },
+                        {
+                            "field": "drive_link",
+                            "reason": "at least one recording link is required",
+                        },
+                    ],
+                    remedy="Pass --video-link or --drive-link, or omit --session to record "
+                    "library work without completing a lesson.",
+                )
         proposed = Work(
             id="",
             learner_id=learner.id,
@@ -1260,15 +1296,41 @@ def handle_add_work(ctx: Context) -> Exit:
             performed_date=ctx.args.date,
         )
         if ctx.args.dry_run:
+            message, blocks = (
+                _recording_preview(ctx, learner, view, proposed) if view is not None else ("", [])
+            )
             ctx.report.result(
-                {"learner": learner.to_dict(), "would_add": proposed.to_dict(), "dry_run": True},
-                human=f"Would record for {learner.name}: {proposed.title} ({proposed.type})",
+                {
+                    "learner": learner.to_dict(),
+                    "would_add": proposed.to_dict(),
+                    "would_complete": view.session.number if view is not None else None,
+                    "would_message": message,
+                    "would_append": len(blocks),
+                    "dry_run": True,
+                },
+                human=(
+                    f"Would complete {learner.name}'s "
+                    f"{ctx.config.label('session')} {view.session.number} with "
+                    f"{proposed.title} ({proposed.type})"
+                    if view is not None
+                    else f"Would record for {learner.name}: {proposed.title} ({proposed.type})"
+                ),
             )
             return Exit.OK
 
         created = store.add_work(proposed)
-    finally:
-        store.close()
+
+    if view is not None:
+        result = complete_recording_work(ctx.config, learner, view, created)
+        ctx.report.result(
+            result,
+            human=(
+                f"Published {created.title} as {learner.name}'s "
+                f"{ctx.config.label('session')} {view.session.number}: "
+                f"{result['appended']} blocks written, the {ctx.config.label('session')} is done"
+            ),
+        )
+        return Exit.OK
 
     ctx.report.result(
         {"learner": learner.to_dict(), "work": created.to_dict()},
@@ -1285,8 +1347,7 @@ def handle_attach_work(ctx: Context) -> Exit:
     numbered list; --pick N then writes exactly that one.
     """
     label = ctx.config.label("session")
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         works = store.list_works(learner.id)
 
@@ -1339,21 +1400,43 @@ def handle_attach_work(ctx: Context) -> Exit:
             view = active[0]
         doc_id = view.session.doc_id
         work = works[pick - 1]
-    finally:
-        store.close()
+        if ctx.args.complete:
+            view = _recording_session(ctx, store, learner, view.session.number)
 
     if ctx.args.dry_run:
-        would = recording_blocks(work)
+        message, would = (
+            _recording_preview(ctx, learner, view, work)
+            if ctx.args.complete
+            else ("", recording_blocks(work))
+        )
         ctx.report.result(
             {
                 "learner": learner.to_dict(),
                 "work": work.to_dict(),
                 "doc_id": doc_id,
                 "would_append": len(would),
+                "would_complete": view.session.number if ctx.args.complete else None,
+                "would_message": message,
                 "dry_run": True,
             },
-            human=f"Would write {len(would)} blocks for “{work.title}” onto "
-            f"{learner.name}'s {label} {view.session.number}.",
+            human=(
+                f"Would publish “{work.title}” as {learner.name}'s {label} {view.session.number}"
+                if ctx.args.complete
+                else f"Would write {len(would)} blocks for “{work.title}” onto "
+                f"{learner.name}'s {label} {view.session.number}."
+            ),
+        )
+        return Exit.OK
+
+    if ctx.args.complete:
+        result = complete_recording_work(ctx.config, learner, view, work)
+        ctx.report.result(
+            result,
+            human=(
+                f"Published “{work.title}” as {learner.name}'s {label} "
+                f"{view.session.number}: {result['appended']} blocks written, "
+                f"the {label} is done"
+            ),
         )
         return Exit.OK
 
@@ -1374,11 +1457,8 @@ def handle_attach_work(ctx: Context) -> Exit:
 
 
 def handle_pieces(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         pieces = store.list_pieces()
-    finally:
-        store.close()
 
     payload = {"pieces": [item.to_dict() for item in pieces], "count": len(pieces)}
     if not pieces:
@@ -1399,8 +1479,7 @@ def handle_pieces(ctx: Context) -> Exit:
 
 
 def handle_assign(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         piece_id = ctx.args.piece or None
 
@@ -1449,8 +1528,6 @@ def handle_assign(ctx: Context) -> Exit:
 
         published_updates = updater.apply(published_plan) if updater and published_plan else None
         store.set_current_piece(learner.id, piece_id)
-    finally:
-        store.close()
 
     ctx.report.result(
         {
@@ -1475,8 +1552,7 @@ def _set_active_many(ctx: Context, names: list[str], *, active: bool) -> Exit:
     name must not leave the first three already marked, and re-running the
     corrected command is then exactly what it says it is.
     """
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         resolved = [_resolve(ctx, store, name) for name in names]
 
         written: list[Learner] = []
@@ -1499,8 +1575,6 @@ def _set_active_many(ctx: Context, names: list[str], *, active: bool) -> Exit:
             # the store just confirmed rather than guessing its shape.
             fresh = store.get_learner(learner.id)
             written.append(fresh if fresh is not None else learner)
-    finally:
-        store.close()
 
     verb = "studying here again" if active else "no longer studying"
     names_text = ", ".join(item.name for item in written)

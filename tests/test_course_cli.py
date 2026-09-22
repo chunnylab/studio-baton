@@ -22,6 +22,7 @@ from baton.adapters.docs.base import Block, DocChild, DocPage, DocStatus, TableR
 from baton.adapters.fakes import FakeDocStore
 from baton.cli.app import run
 from baton.domain.archive import SpanFormat, archive_title, strip_span
+from baton.errors import UpstreamError
 from baton.exits import Exit
 
 MIGRATIONS = Path(baton.__file__).resolve().parent / "migrations"
@@ -218,6 +219,10 @@ def _filed_copy(fake: FakeDocStore, *, parent: str, title: str, rows: list[Table
     return copy_id
 
 
+def _receipts(profile: Path) -> list[Path]:
+    return list((profile / "state" / "courses").glob("*.json"))
+
+
 def test_verify_passes_on_a_complete_copy(studio, capsys):
     _, use = studio
     fake = use(_docs(with_folder=True))
@@ -225,6 +230,30 @@ def test_verify_passes_on_a_complete_copy(studio, capsys):
 
     assert call(studio, "verify", "Ada Whitfield", "--page", copy_id) == Exit.OK
     assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_verify_writes_a_receipt_for_the_exact_course(studio, capsys):
+    profile, use = studio
+    fake = use(_docs(with_folder=True))
+    copy_id = _filed_copy(fake, parent=FOLDER, title="Course 12 (16/05 - 07/08/69)", rows=ROWS)
+
+    assert call(studio, "verify", "Ada Whitfield", "--page", copy_id) == Exit.OK
+    capsys.readouterr()
+
+    files = _receipts(profile)
+    assert len(files) == 1
+    receipt = json.loads(files[0].read_text(encoding="utf-8"))
+    assert receipt["schema"] == 1
+    assert receipt["learner"] == {"id": "1", "name": "Ada Whitfield"}
+    assert receipt["course"] == {"page_id": COURSE_PAGE, "table_id": TABLE}
+    assert receipt["archive"]["page_id"] == copy_id
+    assert receipt["archive"]["title"] == "Course 12 (16/05 - 07/08/69)"
+    assert receipt["rows"] == sorted([[row.title, row.date, row.status] for row in ROWS])
+    assert receipt["sessions"] == [
+        {"number": 1, "doc_id": "doc-ada-01"},
+        {"number": 2, "doc_id": "doc-ada-02"},
+        {"number": 3, "doc_id": "doc-ada-03"},
+    ]
 
 
 def test_verify_fails_when_rows_are_missing(studio, capsys):
@@ -276,6 +305,103 @@ def test_clear_empties_every_session_and_keeps_the_rows(studio, capsys):
     # The record names the copy that stood between the clear and the course.
     assert payload["archive"]["title"] == "Course 12 (16/05 - 07/08/69)"
     assert payload["archive"]["page_id"] == "page-copy"
+
+
+def test_clear_resumes_from_a_receipt_after_the_live_table_was_partly_emptied(studio, capsys):
+    """The receipt, not a half-cleared table, defines the interrupted course."""
+
+    profile, use = studio
+    fake = use(_docs(with_folder=True))
+    copy_id = _filed_copy(fake, parent=FOLDER, title="Course 12 (16/05 - 07/08/69)", rows=ROWS)
+    copy_table = fake.children[copy_id][0].child_id
+    assert call(studio, "verify", "Ada Whitfield", "--page", copy_id) == Exit.OK
+    capsys.readouterr()
+    archived_before = list(fake.tables[copy_table])
+
+    fake.tables[TABLE][0] = TableRow(
+        row_id=ROWS[0].row_id, title=ROWS[0].title, date="", status="Not started"
+    )
+
+    assert call(studio, "clear", "Ada Whitfield") == Exit.OK
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["cleared"] == [1, 2, 3]
+    assert payload["archive"]["verified_receipt"] is True
+    assert fake.tables[copy_table] == archived_before
+    assert _receipts(profile) == []
+
+
+def test_clear_keeps_the_receipt_when_a_session_write_fails(studio, capsys, monkeypatch):
+    profile, use = studio
+    fake = use(_docs(with_folder=True))
+    copy_id = _filed_copy(fake, parent=FOLDER, title="Course 12 (16/05 - 07/08/69)", rows=ROWS)
+    assert call(studio, "verify", "Ada Whitfield", "--page", copy_id) == Exit.OK
+    capsys.readouterr()
+    original_reset = fake.reset_properties
+
+    def reset(doc_id: str):
+        if doc_id == "doc-ada-02":
+            raise UpstreamError("notion rejected the property write", service="notion")
+        return original_reset(doc_id)
+
+    monkeypatch.setattr(fake, "reset_properties", reset)
+    assert call(studio, "clear", "Ada Whitfield") == Exit.UPSTREAM
+    capsys.readouterr()
+
+    assert len(_receipts(profile)) == 1
+
+
+def test_clear_refuses_when_the_verified_archive_changed(studio, capsys):
+    profile, use = studio
+    fake = use(_docs(with_folder=True))
+    copy_id = _filed_copy(fake, parent=FOLDER, title="Course 12 (16/05 - 07/08/69)", rows=ROWS)
+    copy_table = fake.children[copy_id][0].child_id
+    assert call(studio, "verify", "Ada Whitfield", "--page", copy_id) == Exit.OK
+    capsys.readouterr()
+    fake.tables[copy_table][0] = replace(fake.tables[copy_table][0], status="Edited")
+
+    assert call(studio, "clear", "Ada Whitfield") == Exit.GATE
+    capsys.readouterr()
+
+    assert fake.reset_calls == []
+    assert len(_receipts(profile)) == 1
+
+
+def test_clear_refuses_when_the_live_course_changed_after_verification(studio, capsys):
+    profile, use = studio
+    fake = use(_docs(with_folder=True))
+    copy_id = _filed_copy(fake, parent=FOLDER, title="Course 12 (16/05 - 07/08/69)", rows=ROWS)
+    assert call(studio, "verify", "Ada Whitfield", "--page", copy_id) == Exit.OK
+    capsys.readouterr()
+    fake.tables[TABLE][1] = replace(fake.tables[TABLE][1], date="2026-06-02")
+
+    assert call(studio, "clear", "Ada Whitfield") == Exit.GATE
+    capsys.readouterr()
+
+    assert fake.reset_calls == []
+    assert len(_receipts(profile)) == 1
+
+
+def test_clear_refuses_a_receipt_for_different_session_documents(studio, capsys):
+    profile, use = studio
+    fake = use(_docs(with_folder=True))
+    copy_id = _filed_copy(fake, parent=FOLDER, title="Course 12 (16/05 - 07/08/69)", rows=ROWS)
+    assert call(studio, "verify", "Ada Whitfield", "--page", copy_id) == Exit.OK
+    capsys.readouterr()
+
+    connection = sqlite3.connect(profile / "data" / "studio.db")
+    connection.execute(
+        "UPDATE sessions SET doc_id = ? WHERE learner_id = 1 AND number = 3",
+        ("doc-ada-replacement",),
+    )
+    connection.commit()
+    connection.close()
+
+    assert call(studio, "clear", "Ada Whitfield") == Exit.GATE
+    capsys.readouterr()
+
+    assert fake.reset_calls == []
+    assert len(_receipts(profile)) == 1
 
 
 def test_clear_can_be_limited_to_one_session(studio, capsys):

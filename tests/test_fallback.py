@@ -193,7 +193,7 @@ def test_a_degraded_read_reaches_stderr_through_the_cli(profile, monkeypatch, ca
     primary = FakeLearnerStore(learners=list(PRIMARY_PEOPLE))
     primary.fail_with = UpstreamError("down", service="supabase")
     store = FallbackStore(primary, FakeLearnerStore(learners=list(REPLICA_PEOPLE)))
-    monkeypatch.setattr("baton.cli.cmd_learner.open_store", lambda _config: store)
+    monkeypatch.setattr("baton.adapters.db.open_store", lambda _config: store)
 
     assert run(["--profile", str(profile), "--json", "learner", "list"]) == 0
     captured = capsys.readouterr()

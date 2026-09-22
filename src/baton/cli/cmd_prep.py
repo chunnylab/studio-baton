@@ -30,7 +30,7 @@ from __future__ import annotations
 import argparse
 from typing import TYPE_CHECKING, Any
 
-from ..adapters.db import open_store
+from ..adapters.db import store_scope
 from ..domain.models import Learner
 from ..domain.prep import SectionRules, missing_fields
 from ..domain.status import StatusVocabulary
@@ -127,8 +127,7 @@ def handle_prep(ctx: Context) -> Exit:
     required = [str(field) for field in ctx.config.get("prep.required", []) or []]
     warning_fields = [str(field) for field in ctx.config.get("prep.warning", []) or []]
 
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         unmatched: list[dict[str, Any]] = []
         if ctx.args.learner:
             learners = [_resolve(ctx, store, name) for name in ctx.args.learner]
@@ -162,8 +161,6 @@ def handle_prep(ctx: Context) -> Exit:
             else:
                 entry["warnings"] = missing_fields(entry, warning_fields)
                 ready.append(entry)
-    finally:
-        store.close()
 
     human = _report(ctx, ready, blocked, day.isoformat())
     payload = {

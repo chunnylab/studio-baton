@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..adapters.cal import open_calendar
 from ..adapters.cal.base import CalendarEvent
-from ..adapters.db import open_store
+from ..adapters.db import store_scope
 from ..adapters.docs import open_docs
 from ..domain.models import Learner
 from ..domain.resolve import resolve_learner, resolve_learner_loose
@@ -242,16 +242,13 @@ def _pick_session(ctx: Context, store, learner, wanted: int | None):
 
 @guarded("calendar")
 def handle_book(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner, matched = _resolve_for_booking(ctx, store, ctx.args.name)
         session = _pick_session(ctx, store, learner, ctx.args.session)
         day = _date(ctx, ctx.args.date)
         result = _scheduler(ctx).book(
             learner, session, day, ctx.args.start, ctx.args.end, dry_run=ctx.args.dry_run
         )
-    finally:
-        store.close()
 
     verb = "Would book" if ctx.args.dry_run else "Booked"
     label = ctx.config.label("session")
@@ -312,12 +309,11 @@ def handle_schedule(ctx: Context) -> Exit:
         )
         return Exit.OK
 
-    store = open_store(ctx.config)
-    scheduler = _scheduler(ctx)
-    booked: list[dict[str, Any]] = []
-    blocked: list[dict[str, Any]] = []
+    with store_scope(ctx.config) as store:
+        scheduler = _scheduler(ctx)
+        booked: list[dict[str, Any]] = []
+        blocked: list[dict[str, Any]] = []
 
-    try:
         # Every slot is resolved before any of them books. With the partial-
         # name relaxation two differently-typed names can land on the same
         # learner ("Pun" and "Pun the younger"), and the duplicate guard above
@@ -382,8 +378,6 @@ def handle_schedule(ctx: Context) -> Exit:
                 blocked.append(
                     {"slot": start.strftime("%H:%M"), "name": learner.name, "error": err.to_dict()}
                 )
-    finally:
-        store.close()
 
     payload = {
         "date": day.isoformat(),
@@ -406,8 +400,7 @@ def handle_schedule(ctx: Context) -> Exit:
 
 @guarded("calendar")
 def handle_cancel(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         session = _pick_session(ctx, store, learner, ctx.args.session)
         day = _date(ctx, ctx.args.date)
@@ -419,8 +412,6 @@ def handle_cancel(ctx: Context) -> Exit:
             today=today_in(ctx.config.timezone),
             dry_run=ctx.args.dry_run,
         )
-    finally:
-        store.close()
 
     removed = result.get("deleted", result.get("would_delete", []))
     verb = "Would cancel" if ctx.args.dry_run else "Cancelled"
@@ -567,13 +558,10 @@ def _resolve_for_standing(ctx: Context, store, name: str | None):
 @guarded("calendar")
 def handle_standing(ctx: Context) -> Exit:
     sync = _standing(ctx)
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve_for_standing(ctx, store, ctx.args.name)
         learner_id = None if learner is None else learner.id
         series = sync.calendar.list_standing(learner_id)
-    finally:
-        store.close()
 
     payload = {
         "scope": "all" if learner is None else learner.name,
@@ -593,12 +581,9 @@ def handle_standing(ctx: Context) -> Exit:
 @guarded("calendar")
 def handle_standing_sync(ctx: Context) -> Exit:
     sync = _standing(ctx)
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve_for_standing(ctx, store, ctx.args.name)
         result = sync.sync(store, learner=learner, dry_run=ctx.args.dry_run)
-    finally:
-        store.close()
 
     if ctx.args.dry_run:
         ctx.report.result(

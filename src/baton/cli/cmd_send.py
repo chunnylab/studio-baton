@@ -18,17 +18,17 @@ from ..adapters.cal import open_calendar
 from ..adapters.chat import open_chat
 from ..adapters.chat.base import Messenger, resolve_contact
 from ..adapters.chat.guard import GuardedMessenger
-from ..adapters.db import open_store
+from ..adapters.db import store_scope
 from ..adapters.docs import VIDEO_LINK_BLOCKS, find_video_link, open_docs
 from ..core.receipts import DEFAULT_WINDOW_HOURS, Receipts
 from ..core.video_waivers import DEFAULT_TTL_MINUTES, VideoWaivers, generate_code
 from ..domain.localdate import DateFormat
-from ..domain.models import Learner
+from ..domain.models import Learner, Work
 from ..domain.prep import SectionRules
 from ..domain.resolve import resolve_learner
 from ..domain.status import StatusVocabulary
 from ..domain.whenever import parse_date
-from ..errors import BatonError, ConfigError, GateError, NeedsHumanError, UsageError
+from ..errors import BatonError, ConfigError, GateError, NeedsHumanError, StateError, UsageError
 from ..exits import Exit
 from ..pipelines.learner import LearnerHistory
 from ..pipelines.lesson_video import send_video
@@ -37,6 +37,7 @@ from ..pipelines.schedule import Scheduler
 from ..pipelines.send import evaluate, gather_context, send_lesson
 from ..pipelines.staging import (
     PUBLISHED,
+    RECORDING,
     STAGED,
     SUMMARISED,
     PieceSnapshot,
@@ -56,9 +57,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "send",
         help="Send a lesson message, refusing when required data is missing.",
         description=(
-            "Sends the message that was published, never a re-derived one. A "
-            "missing required field blocks the send with exit 5 and there is no "
-            "override, with one exception: a session with no recording link "
+            "Sends the summary or recording that was published, never a "
+            "re-derived one. A missing required field blocks the send with exit 5 "
+            "and there is no override, with one exception: a session with no recording link "
             "stops on exit 3 and asks. `send video-waiver` texts a confirmation "
             "code to a configured contact, and --without-video <code> is where "
             "that person's answer sends the lesson with no video section, not "
@@ -359,6 +360,23 @@ def _lesson_receipt_key(learner_id: str, session_number: Any) -> str:
     return f"lesson|{learner_id}|{session_number}"
 
 
+def _recording_receipt_key(learner_id: str, work: Work | Mapping[str, Any]) -> str:
+    work_id = work.id if isinstance(work, Work) else str(work.get("id", ""))
+    title = work.title if isinstance(work, Work) else str(work.get("title", ""))
+    return f"recording|{learner_id}|{work_id or title}"
+
+
+def _published_receipt_key(
+    learner_id: str, session_number: Any, published: Mapping[str, Any]
+) -> str:
+    if _published_kind(published) == RECORDING:
+        work = published.get("work")
+        return _recording_receipt_key(
+            learner_id, work if isinstance(work, dict) else {"id": "", "title": ""}
+        )
+    return _lesson_receipt_key(learner_id, session_number)
+
+
 def _day(ctx: Context, value: str) -> date:
     """A day argument, in the same grammar `calendar book` accepts."""
     return parse_date(
@@ -419,6 +437,63 @@ def _roster_for_day(
         return learners, [], "documents"
 
 
+def _published_kind(published: Mapping[str, Any]) -> str:
+    return str(published.get("kind") or "summary")
+
+
+def _send_recording_record(
+    ctx: Context, learner: Learner, published: Mapping[str, Any], *, dry_run: bool
+) -> dict[str, Any]:
+    """Send the recording a recording-only publish recorded."""
+
+    raw_work = published.get("work")
+    if not isinstance(raw_work, dict):
+        raise StateError(
+            f"The recording lesson for {learner.name} has no work snapshot.",
+            remedy="Re-run `learner attach-work --complete` for the chosen work.",
+        )
+    work = Work.from_dict(raw_work)
+    session_number = int(published.get("session_number", 0) or 0)
+    doc_url = str(published.get("doc_url", ""))
+
+    missing: list[dict[str, str]] = []
+    if not work.id.strip() and not work.title.strip():
+        missing.append({"field": "work_identity"})
+    if not work.video_link.strip() and not work.drive_link.strip():
+        missing.append({"field": "recording_link"})
+    if not doc_url:
+        missing.append({"field": "doc_link"})
+    if not session_number:
+        missing.append({"field": "session_number"})
+    if missing:
+        raise GateError(
+            f"The recording lesson for {learner.name} is not sendable.",
+            missing=missing,
+            remedy="Fix the recorded work or its published record, then send again.",
+        )
+
+    messenger = _messenger(
+        ctx,
+        what=f"{learner.name}'s {ctx.config.label('session')} {session_number} recording",
+        key=_recording_receipt_key(learner.id, work),
+    )
+    recipient_id = messenger.resolve(ctx.args.to)
+    result = send_recording(
+        messenger,
+        recipient_id=recipient_id,
+        work=work,
+        learner_name=learner.name,
+        instrument=learner.instrument,
+        date=_date_format(ctx).of_text(work.performed_date),
+        doc_url=doc_url,
+        dry_run=dry_run,
+        message=str(published.get("short_message", "")),
+    )
+    result["session_number"] = session_number
+    result["kind"] = RECORDING
+    return result
+
+
 def _send_one(
     ctx: Context,
     name: str,
@@ -433,8 +508,7 @@ def _send_one(
     duplicate check and the send act on the same person: the check cannot
     compare raw strings and the send compare records.
     """
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = resolved if resolved is not None else _resolve(ctx, store, name)
         records = PublishedRecord(ctx.config.state_dir / "published")
 
@@ -453,6 +527,9 @@ def _send_one(
                     f"Nothing has been published for {learner.name} yet.",
                     remedy=f'Run `baton lesson publish "{learner.name}"` first.',
                 )
+
+        if _published_kind(published) == RECORDING:
+            return _send_recording_record(ctx, learner, published, dry_run=dry_run)
 
         # Built here, not at the top: the identity of this message is the
         # learner and the session it publishes, and neither is known until the
@@ -538,8 +615,6 @@ def _send_one(
             optional=optional,
             dry_run=dry_run,
         )
-    finally:
-        store.close()
 
 
 @guarded("send")
@@ -547,9 +622,10 @@ def handle_lesson(ctx: Context) -> Exit:
     result = _send_one(ctx, ctx.args.name, session=ctx.args.session, dry_run=ctx.args.dry_run)
 
     verb = "would send" if ctx.args.dry_run else "sent"
+    deliverable = "recording" if str(result.get("kind", "summary")) == RECORDING else "message"
     ctx.report.result(
         result,
-        human=f"{verb.capitalize()} message for {result['learner']} "
+        human=f"{verb.capitalize()} {deliverable} for {result['learner']} "
         f"({ctx.config.label('session')} {result['session_number']}) "
         f"to {ctx.args.to}"
         # `not result.get("sent")` has no reachable trigger today: every
@@ -576,8 +652,7 @@ def handle_video_waiver(ctx: Context) -> Exit:
     question `send lesson` asked without first having read that message.
     """
     label = ctx.config.label("session")
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         records = PublishedRecord(ctx.config.state_dir / "published")
         if ctx.args.session is not None:
@@ -595,8 +670,6 @@ def handle_video_waiver(ctx: Context) -> Exit:
                     remedy=f'Run `baton lesson publish "{ctx.args.name}"` first.',
                 )
         piece_sources = _piece_sources(store, learner, published)
-    finally:
-        store.close()
 
     session_number = int(published.get("session_number", 0) or 0)
     doc_id = str(published.get("doc_id", ""))
@@ -672,8 +745,7 @@ def handle_recording(ctx: Context) -> Exit:
     remembered between them, so a pick always lands on the row the list the
     person answered from was built from.
     """
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
         works = store.list_works(learner.id)
 
@@ -715,8 +787,6 @@ def handle_recording(ctx: Context) -> Exit:
                 details={"candidates": list_candidates(works)} if works else None,
             )
         index = pick - 1
-    finally:
-        store.close()
 
     # The lesson page the recording belongs to, when one is published: the
     # record already exists, and after a publish it *is* "the latest lesson".
@@ -733,7 +803,7 @@ def handle_recording(ctx: Context) -> Exit:
     messenger = _messenger(
         ctx,
         what=f"{learner.name}'s recording “{work.title}”",
-        key=f"recording|{learner.id}|{getattr(work, 'id', '') or work.title}",
+        key=_recording_receipt_key(learner.id, work),
     )
     recipient_id = messenger.resolve(ctx.args.to)
     result = send_recording(
@@ -772,13 +842,10 @@ def handle_batch(ctx: Context) -> Exit:
     # comparison of the raw names lets that pair through, after which each
     # entry sends its own message. The duplicate that matters is the person,
     # not the spelling.
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         resolved: list[Learner] = []
         for name in requested:
             resolved.append(_resolve(ctx, store, name))
-    finally:
-        store.close()
 
     duplicates = sorted(
         {
@@ -798,13 +865,20 @@ def handle_batch(ctx: Context) -> Exit:
     sent = 0
 
     for name, learner in zip(requested, resolved, strict=True):
+        latest = PublishedRecord(ctx.config.state_dir / "published").latest(learner.id)
         try:
             result = _send_one(ctx, name, session=None, dry_run=ctx.args.dry_run, resolved=learner)
             results.append(result)
             if result.get("sent"):
                 sent += 1
         except BatonError as err:
-            blocked.append({"learner": name, "error": err.to_dict()})
+            blocked.append(
+                {
+                    "learner": name,
+                    "kind": _published_kind(latest) if latest is not None else "summary",
+                    "error": err.to_dict(),
+                }
+            )
 
     payload = {
         "requested": len(requested),
@@ -838,8 +912,7 @@ def handle_video(ctx: Context) -> Exit:
     label = ctx.config.label("session")
     # The store stays open past the published record because the piece it
     # names is what tells the song on the page apart from the recording.
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
 
         records = PublishedRecord(ctx.config.state_dir / "published")
@@ -858,8 +931,6 @@ def handle_video(ctx: Context) -> Exit:
                     remedy=f'Run `baton lesson publish "{ctx.args.name}"` first.',
                 )
         piece_sources = _piece_sources(store, learner, published)
-    finally:
-        store.close()
 
     session_number = int(published.get("session_number", 0) or 0)
     doc_id = str(published.get("doc_id", ""))
@@ -955,9 +1026,8 @@ def handle_readiness(ctx: Context) -> Exit:
     block was hunted for on a lesson that had never been published.
     """
     day = _day(ctx, str(ctx.args.date))
-    store = open_store(ctx.config)
-    docs = open_docs(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
+        docs = open_docs(ctx.config)
         learners, unmatched, source = _roster_for_day(ctx, store, docs, day)
         records = PublishedRecord(ctx.config.state_dir / "published")
         staging = StagingStore(ctx.config.state_dir / "lessons")
@@ -991,28 +1061,42 @@ def handle_readiness(ctx: Context) -> Exit:
             video = ""
             near_misses: list[str] = []
             if record is not None:
-                video = find_video_link(
-                    docs,
-                    str(record.get("doc_id", "")),
-                    blocks=video_blocks,
-                    exclude=_piece_sources(store, learner, record),
-                )
-                summary = record.get("summary") or {}
-                if vocabulary and isinstance(summary, dict) and summary:
-                    near_misses = contracts.vocabulary_near_misses(summary, vocabulary)
-                # The gate's own verdict, from the same `evaluate` the send
-                # refuses through, never a second opinion that could drift.
-                context = gather_context(store, learner.id, record, video_link=video)
-                missing, warnings = evaluate(context, required=required, optional=optional)
+                if _published_kind(record) == RECORDING:
+                    raw_work = record.get("work")
+                    work = Work.from_dict(raw_work) if isinstance(raw_work, dict) else None
+                    video = work.video_link if work is not None else ""
+                    if work is None:
+                        missing = [{"field": "recording_work"}]
+                    elif not work.video_link.strip() and not work.drive_link.strip():
+                        missing = [{"field": "recording_link"}]
+                    elif not str(record.get("doc_url", "")):
+                        missing = [{"field": "doc_link"}]
+                    else:
+                        missing = []
+                else:
+                    video = find_video_link(
+                        docs,
+                        str(record.get("doc_id", "")),
+                        blocks=video_blocks,
+                        exclude=_piece_sources(store, learner, record),
+                    )
+                    summary = record.get("summary") or {}
+                    if vocabulary and isinstance(summary, dict) and summary:
+                        near_misses = contracts.vocabulary_near_misses(summary, vocabulary)
+                    # The gate's own verdict, from the same `evaluate` the send
+                    # refuses through, never a second opinion that could drift.
+                    context = gather_context(store, learner.id, record, video_link=video)
+                    missing, warnings = evaluate(context, required=required, optional=optional)
 
             rows.append(
                 {
                     "learner": learner.name,
+                    "kind": _published_kind(record) if record is not None else "summary",
                     "staging": staging_state,
                     "video_block": bool(video),
                     "vocabulary": (
                         "-"
-                        if not vocabulary or record is None
+                        if not vocabulary or record is None or _published_kind(record) == RECORDING
                         else ("ผ่าน" if not near_misses else "ไม่ผ่าน: " + ", ".join(near_misses))
                     ),
                     "missing": [str(item.get("field", "")) for item in missing],
@@ -1037,7 +1121,7 @@ def handle_readiness(ctx: Context) -> Exit:
             if not row["missing"] and row["optional_missing"]:
                 gap = "ไม่บล็อก: " + ", ".join(row["optional_missing"])
             lines.append(
-                f"  {row['learner']}: staging {row['staging']} | "
+                f"  {row['learner']}: {row['kind']} | staging {row['staging']} | "
                 f"video {'มี' if row['video_block'] else 'ไม่มี'} | "
                 f"vocab {row['vocabulary']} | ขาด {gap}"
             )
@@ -1049,8 +1133,6 @@ def handle_readiness(ctx: Context) -> Exit:
             )
         ctx.report.result(payload, human="\n".join(lines))
         return Exit.OK
-    finally:
-        store.close()
 
 
 @guarded("send")
@@ -1062,9 +1144,8 @@ def handle_aftermath(ctx: Context) -> Exit:
     would only teach the operator to stop running it.
     """
     day = _day(ctx, str(ctx.args.date))
-    store = open_store(ctx.config)
-    docs = open_docs(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
+        docs = open_docs(ctx.config)
         staging = StagingStore(ctx.config.state_dir / "lessons")
         records = PublishedRecord(ctx.config.state_dir / "published")
 
@@ -1083,11 +1164,17 @@ def handle_aftermath(ctx: Context) -> Exit:
                 )
                 continue
             if draft.status != PUBLISHED:
+                state = (
+                    "ผลงานยังไม่ publish"
+                    if draft.kind == RECORDING
+                    else ("ยังไม่มีสรุป" if draft.summary is None else "สรุปแล้ว ยังไม่ publish")
+                )
                 stuck.append(
                     {
                         "learner": learner.name,
                         "session_number": draft.session_number,
-                        "state": "ยังไม่มีสรุป" if draft.summary is None else "สรุปแล้ว ยังไม่ publish",
+                        "kind": draft.kind,
+                        "state": state,
                     }
                 )
                 continue
@@ -1150,7 +1237,9 @@ def handle_aftermath(ctx: Context) -> Exit:
                     )
                     continue
                 key = receipts.digest(
-                    service, recipient_id, _lesson_receipt_key(learner.id, session_number)
+                    service,
+                    recipient_id,
+                    _published_receipt_key(learner.id, session_number, record),
                 )
                 checked += 1
                 if receipts.find(key) is None:
@@ -1217,5 +1306,3 @@ def handle_aftermath(ctx: Context) -> Exit:
             )
         ctx.report.result(payload, human="\n".join(lines))
         return Exit.OK
-    finally:
-        store.close()

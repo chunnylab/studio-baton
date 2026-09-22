@@ -23,6 +23,10 @@ _FOOTER = (
     "เขียนจากบันทึกการสอนคาบนี้ 🐈🎀"
 )
 
+# YouTube rejected the one generated description that contained `>` with
+# `invalidDescription`. Arrows keep the musical meaning without the characters.
+_SAFE_DESCRIPTION = str.maketrans({"<": "←", ">": "→"})
+
 
 def format_description(
     summary: dict[str, Any],
@@ -76,4 +80,4 @@ def format_description(
 
     lines.append("")
     lines.append(_FOOTER)
-    return "\n".join(lines)
+    return "\n".join(lines).translate(_SAFE_DESCRIPTION)

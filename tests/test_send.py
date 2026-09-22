@@ -542,6 +542,35 @@ def test_a_complete_publishment_sends_through_the_cli(studio, capsys):
     assert "https://example.invalid/watch/ada-3" in messenger.sent[0][1]
 
 
+def test_a_published_recording_lesson_sends_the_record_message(studio, capsys):
+    profile, messenger, _docs = studio
+    work = {
+        "id": "7",
+        "learner_id": "1",
+        "title": "Uptown Funk",
+        "type": "cover",
+        "video_link": "https://youtu.be/up-funk",
+        "drive_link": "",
+        "performed_date": "2026-08-20",
+    }
+    publish(
+        profile,
+        "1",
+        kind="recording",
+        work=work,
+        summary=None,
+        short_message="RECORD MESSAGE",
+    )
+
+    assert call(studio, "lesson", "Ada Whitfield", "--to", "teacher") == Exit.OK
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["kind"] == "recording"
+    assert payload["session_number"] == 3
+    assert payload["message"] == "RECORD MESSAGE"
+    assert messenger.sent[0][1] == "RECORD MESSAGE"
+
+
 def test_dry_run_blocks_before_sending_when_a_field_is_missing(studio, capsys):
     profile, messenger, _docs = studio
     publish(profile, "1", doc_url="")
@@ -599,6 +628,30 @@ def test_a_batch_rejects_a_duplicated_learner(studio, capsys):
 
     payload = json.loads(capsys.readouterr().out)
     assert "Ada Whitfield" in payload["message"]
+
+
+def test_a_blocked_batch_recording_keeps_its_kind_for_the_ledger(studio, capsys):
+    profile, _messenger, _docs = studio
+    publish(
+        profile,
+        "1",
+        kind="recording",
+        summary=None,
+        doc_url="",
+        short_message="RECORD MESSAGE",
+        work={
+            "id": "7",
+            "learner_id": "1",
+            "title": "Uptown Funk",
+            "video_link": "https://youtu.be/up-funk",
+        },
+    )
+
+    code = call(studio, "batch", "--to", "teacher", "--learner", "Ada Whitfield")
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == Exit.GATE
+    assert payload["blocked"][0]["kind"] == "recording"
 
 
 def test_a_batch_rejects_two_spellings_of_one_learner(studio, capsys):

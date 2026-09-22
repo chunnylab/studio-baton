@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from ...core.config import Config
@@ -70,6 +72,26 @@ def open_store(config: Config) -> LearnerStore:
     return FallbackStore(primary, secondary)
 
 
+@contextmanager
+def store_scope(config: Config) -> Iterator[LearnerStore]:
+    """The one store a CLI command holds, closed on every way out.
+
+    Every command follows the same shape: open, work inside the ``with``,
+    close, then report after the block so a report never holds the store
+    open. Hand-written ``try/finally store.close()`` per handler said the
+    same thing forty-five times and could be forgotten once; this says it
+    once and cannot.
+
+    Looks ``open_store`` up at call time, so tests that monkeypatch
+    ``baton.adapters.db.open_store`` flow through here unchanged.
+    """
+    store = open_store(config)
+    try:
+        yield store
+    finally:
+        store.close()
+
+
 __all__ = [
     "DRIVERS",
     "FallbackStore",
@@ -80,4 +102,5 @@ __all__ = [
     "SqliteStore",
     "check_identifier",
     "open_store",
+    "store_scope",
 ]

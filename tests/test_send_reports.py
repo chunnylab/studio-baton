@@ -191,6 +191,33 @@ def test_the_roster_falls_back_to_the_documents_and_says_so(studio, capsys):
     assert "อ่านจากวันที่บนเอกสาร" in text(studio, capsys, "readiness", "--date", DAY)
 
 
+def test_a_published_recording_is_ready_without_a_summary(studio, capsys):
+    publish(
+        studio,
+        kind="recording",
+        summary=None,
+        short_message="RECORD MESSAGE",
+        work={
+            "id": "7",
+            "learner_id": "1",
+            "title": "Uptown Funk",
+            "type": "cover",
+            "video_link": "https://youtu.be/up-funk",
+            "drive_link": "",
+            "performed_date": DAY,
+        },
+    )
+
+    assert call(studio, "readiness", "--date", DAY) == Exit.OK
+    payload = out(capsys)
+
+    assert payload["ready"] == 1
+    row = payload["learners"][0]
+    assert row["kind"] == "recording"
+    assert row["missing"] == []
+    assert row["video_block"] is True
+
+
 def test_the_report_names_what_the_send_would_refuse_on(studio, capsys):
     publish(studio, short_message="")
 
@@ -351,6 +378,35 @@ def test_a_receipt_counts_as_proof_the_message_went_out(studio, capsys):
     assert "เจอหลักฐาน 1" in text(studio, capsys, "aftermath", "--date", DAY)
 
 
+def test_aftermath_checks_a_recording_receipt_by_work_identity(studio, capsys):
+    publish(
+        studio,
+        kind="recording",
+        summary=None,
+        short_message="RECORD MESSAGE",
+        work={
+            "id": "7",
+            "learner_id": "1",
+            "title": "Uptown Funk",
+            "type": "cover",
+            "video_link": "https://youtu.be/up-funk",
+            "drive_link": "",
+            "performed_date": DAY,
+        },
+    )
+    _profile, messenger = studio
+
+    assert call(studio, "lesson", "Ada Whitfield", "--to", "teacher") == Exit.OK
+    capsys.readouterr()
+    assert len(messenger.sent) == 1
+
+    assert call(studio, "aftermath", "--date", DAY) == Exit.OK
+    payload = out(capsys)
+
+    assert payload["send_checks"]["receipts_found"] == 1
+    assert payload["unsent"] == []
+
+
 def test_stuck_drafts_and_orphan_files_are_different_problems(studio, capsys):
     stage_draft(studio, "1", "Ada Whitfield")
     stage_draft(studio, "999", "Ghost Student", session_number=1)
@@ -359,7 +415,12 @@ def test_stuck_drafts_and_orphan_files_are_different_problems(studio, capsys):
     payload = out(capsys)
 
     assert payload["stuck_drafts"] == [
-        {"learner": "Ada Whitfield", "session_number": 3, "state": "ยังไม่มีสรุป"}
+        {
+            "learner": "Ada Whitfield",
+            "session_number": 3,
+            "kind": "summary",
+            "state": "ยังไม่มีสรุป",
+        }
     ]
     assert payload["orphan_drafts"] == [
         {

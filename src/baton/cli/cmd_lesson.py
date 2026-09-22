@@ -1,4 +1,4 @@
-"""``baton lesson``: stage a lesson, validate a written summary, publish it.
+"""``baton lesson``: stage a summary or resume a recording lesson, then publish.
 
 The loop an agent follows, and the reason it is three commands rather than one:
 
@@ -8,6 +8,10 @@ The loop an agent follows, and the reason it is three commands rather than one:
     baton lesson ingest   "Ada" --file s.json  # validated, or exit 4 with reasons
     baton lesson render   "Ada"              # deterministic preview
     baton lesson publish  "Ada"              # onto the document
+
+A recording-only lesson skips the model contract: `learner add-work --session`
+creates its draft, and `lesson publish` is the retry path if document writes
+stopped partway.
 
 `contract` hands the model everything it needs and tells it exactly what shape
 to return. `ingest` is where a wrong shape stops, nothing is stored, and every
@@ -25,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import contracts
-from ..adapters.db import open_store
+from ..adapters.db import store_scope
 from ..adapters.db.base import LearnerStore
 from ..adapters.docs import VIDEO_LINK_BLOCKS, find_video_link, open_docs
 from ..adapters.docs.base import PreservePolicy
@@ -47,8 +51,11 @@ from ..errors import (
 from ..exits import Exit
 from ..pipelines.learner import LearnerHistory
 from ..pipelines.publish import SummaryPublisher
+from ..pipelines.recording import complete_recording_work, recording_blocks
 from ..pipelines.staging import (
     PUBLISHED,
+    RECORDING,
+    STAGED,
     SUMMARISED,
     LessonDraft,
     PieceSnapshot,
@@ -270,6 +277,40 @@ def _staging(ctx: Context) -> StagingStore:
 
 def _published(ctx: Context) -> PublishedRecord:
     return PublishedRecord(ctx.config.state_dir / "published")
+
+
+def _recording_view(ctx: Context, store, learner: Learner, draft):
+    """The session a recording draft owns, including a half-finished retry."""
+
+    history = LearnerHistory(
+        store,
+        open_docs(ctx.config),
+        StatusVocabulary.from_config(ctx.config.section("docs.statuses")),
+        max_parallel_reads=int(ctx.config.get("docs.max_parallel_reads", 4)),
+    )
+    views = history.sessions(learner)
+    view = next((item for item in views if item.number == draft.session_number), None)
+    label = ctx.config.label("session")
+    if view is None or not view.session.doc_id:
+        raise UsageError(
+            f"{learner.name} has no {label} {draft.session_number} with a document.",
+            remedy=f'Run `baton learner sessions "{learner.name}"` to see what exists.',
+        )
+    if view.state not in {"in_progress", "done"}:
+        raise UsageError(
+            f"{learner.name}'s {label} {draft.session_number} is {view.state or 'unknown'}.",
+            remedy="A recording lesson can finish while its document is open or just completed.",
+        )
+    return view
+
+
+def _require_summary_draft(draft: LessonDraft, learner_name: str) -> None:
+    if draft.kind == RECORDING:
+        raise UsageError(
+            f"{learner_name}'s staged lesson is a recording, not a teaching summary.",
+            remedy=f'Publish it with `baton lesson publish "{learner_name}"`, or use '
+            "`baton lesson remove` after checking the recording draft.",
+        )
 
 
 def _named(ctx: Context) -> str:
@@ -910,9 +951,16 @@ def _read_payload(ctx: Context) -> Any:
 
 
 def handle_stage(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, _named(ctx))
+        existing = _staging(ctx).get(learner.id)
+        if existing is not None and existing.kind == RECORDING and existing.status != PUBLISHED:
+            raise UsageError(
+                f"{learner.name} still has an unpublished recording draft for "
+                f"{existing.session_number}.",
+                remedy=f'Finish it with `baton lesson publish "{learner.name}"`, or remove '
+                "the draft after checking the recording.",
+            )
 
         context = ctx.args.context
         if ctx.args.context_file:
@@ -997,8 +1045,6 @@ def handle_stage(ctx: Context) -> Exit:
             corrected_context=corrected,
             previous_context=previous_context,
         )
-    finally:
-        store.close()
 
     _staging(ctx).save(draft)
     label = ctx.config.label("session")
@@ -1017,13 +1063,11 @@ def handle_stage(ctx: Context) -> Exit:
 
 
 def handle_contract(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, _named(ctx))
-    finally:
-        store.close()
 
     draft = _staging(ctx).require(learner.id, learner.name)
+    _require_summary_draft(draft, learner.name)
     learner_context = learner.to_dict()
     learner_context.pop("current_piece_id", None)
     piece = draft.piece_snapshot.piece
@@ -1102,14 +1146,12 @@ def handle_contract(ctx: Context) -> Exit:
 
 
 def handle_ingest(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, _named(ctx))
-    finally:
-        store.close()
 
     staging = _staging(ctx)
     draft = staging.require(learner.id, learner.name)
+    _require_summary_draft(draft, learner.name)
     payload = _read_payload(ctx)
     theory = _theory(ctx)
 
@@ -1153,13 +1195,11 @@ def handle_ingest(ctx: Context) -> Exit:
 
 
 def handle_render(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, _named(ctx))
-    finally:
-        store.close()
 
     draft = _staging(ctx).require(learner.id, learner.name)
+    _require_summary_draft(draft, learner.name)
     if draft.summary is None:
         raise UsageError(
             f"No summary has been accepted for {learner.name} yet.",
@@ -1302,9 +1342,10 @@ def handle_list(ctx: Context) -> Exit:
     width = max(len(draft.learner_name) for draft in drafts)
     lines = []
     for draft, view in zip(drafts, lessons, strict=True):
+        detail = "recording" if draft.kind == RECORDING else None
         lines.append(
             f"  {draft.learner_name:<{width}}  {label} {draft.session_number:<3} "
-            f"{draft.status}" + ("  summary ✓" if draft.summary else "  summary -")
+            f"{draft.status}  {detail or ('summary ✓' if draft.summary else 'summary -')}"
         )
         lines.extend(_target_detail_lines(draft.learner_name, view["targets"], view["recording"]))
     ctx.report.result(payload, human="\n".join(lines))
@@ -1312,11 +1353,8 @@ def handle_list(ctx: Context) -> Exit:
 
 
 def handle_show(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, _named(ctx))
-    finally:
-        store.close()
 
     draft = _staging(ctx).require(learner.id, learner.name)
     ctx.report.result(
@@ -1328,16 +1366,72 @@ def handle_show(ctx: Context) -> Exit:
 @guarded("lesson")
 def handle_publish(ctx: Context) -> Exit:
     staging = _staging(ctx)
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, _named(ctx))
         draft = staging.require(learner.id, learner.name)
+        label = ctx.config.label("session")
+        if ctx.args.session is not None and int(ctx.args.session) != draft.session_number:
+            raise UsageError(
+                f"{learner.name}'s staged draft is {label} {draft.session_number}, "
+                f"not {label} {ctx.args.session}.",
+                remedy=f"Publish the draft as it stands with `baton lesson publish "
+                f'"{learner.name}"`, or re-stage with `--session {ctx.args.session}` first.',
+            )
+
+        if draft.kind == RECORDING:
+            if draft.work is None:
+                raise StateError(
+                    f"The recording draft for {learner.name} has no work snapshot.",
+                    remedy="Re-run `learner attach-work --complete --pick N` for the work.",
+                )
+            existing_record = _published(ctx).get(learner.id, draft.session_number)
+            if existing_record is not None and not ctx.args.force:
+                if str(existing_record.get("kind") or "summary") != RECORDING:
+                    raise StateError(
+                        f"{learner.name}'s {label} {draft.session_number} already has a "
+                        "published summary.",
+                        remedy="Unpublish the summary before publishing a recording.",
+                    )
+                if draft.status != PUBLISHED and draft.target_done("docs"):
+                    draft.status = PUBLISHED
+                    staging.save(draft)
+                ctx.report.result(
+                    {**draft.summary_view(), "skipped": "already published"},
+                    human=f"{learner.name} {label} {draft.session_number} was already "
+                    "published. Use --force to publish again.",
+                )
+                return Exit.OK
+
+            view = _recording_view(ctx, store, learner, draft)
+            if ctx.args.dry_run:
+                blocks = recording_blocks(draft.work)
+                ctx.report.result(
+                    {
+                        **draft.summary_view(),
+                        "doc_id": draft.doc_id,
+                        "would_append": len(blocks),
+                        "would_complete": True,
+                        "dry_run": True,
+                    },
+                    human=f"Would publish {draft.work.title} as {learner.name}'s "
+                    f"{label} {draft.session_number}.",
+                )
+                return Exit.OK
+
+            recording_result = complete_recording_work(ctx.config, learner, view, draft.work)
+            ctx.report.result(
+                recording_result,
+                human=f"Published {draft.work.title} as {learner.name}'s "
+                f"{label} {draft.session_number}: "
+                f"{recording_result['appended']} blocks written, "
+                f"the {label} is done",
+            )
+            return Exit.OK
+
         # Read while the store is open: which URLs on the page are the song
         # rather than the recording, so neither the description update nor the
         # gate can mistake one for the other.
         piece_sources = _piece_sources(store, learner, draft.piece_snapshot)
-    finally:
-        store.close()
 
     label = ctx.config.label("session")
     if ctx.args.session is not None and int(ctx.args.session) != draft.session_number:
@@ -1520,11 +1614,8 @@ def handle_publish(ctx: Context) -> Exit:
 
 @guarded("lesson")
 def handle_unpublish(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, _named(ctx))
-    finally:
-        store.close()
 
     label = ctx.config.label("session")
     records = _published(ctx)
@@ -1563,10 +1654,17 @@ def handle_unpublish(ctx: Context) -> Exit:
 
     docs = open_docs(ctx.config)
     recorded = [item for item in (record.get("blocks") or []) if isinstance(item, Mapping)]
+    recording_record = str(record.get("kind") or "summary") == RECORDING
     if ctx.args.whole_page:
         plan = plan_whole_page(docs, doc_id)
     elif recorded:
         plan = plan_recorded(docs, doc_id, recorded)
+    elif recording_record:
+        raise StateError(
+            f"The recording record for {learner.name}'s {label} {session} has no block ids.",
+            remedy="Nothing can be removed safely. Audit the page, or use "
+            "--whole-page --force after checking what else is on it.",
+        )
     else:
         # A record written before block ids were kept: attribute the page by
         # re-rendering the summary the record still holds, with the same
@@ -1623,11 +1721,13 @@ def handle_unpublish(ctx: Context) -> Exit:
     staging = _staging(ctx)
     draft = staging.get(learner.id)
     restored = False
+    restored_kind = ""
     if draft is not None and draft.session_number == session and draft.status == PUBLISHED:
-        draft.status = SUMMARISED
+        draft.status = STAGED if draft.kind == RECORDING else SUMMARISED
         draft.targets.pop("docs", None)
         staging.save(draft)
         restored = True
+        restored_kind = draft.kind
 
     record_removed = records.remove(learner.id, session)
 
@@ -1640,7 +1740,14 @@ def handle_unpublish(ctx: Context) -> Exit:
     if plan.mode == "legacy":
         lines.append("  attributed by re-rendering the stored summary (record has no block ids)")
     lines.append(f"  the {label} is in progress again")
-    lines.append("  draft restored to summarised" if restored else "  no staged draft to restore")
+    if restored:
+        lines.append(
+            "  draft restored to staged recording"
+            if restored_kind == RECORDING
+            else "  draft restored to summarised"
+        )
+    else:
+        lines.append("  no staged draft to restore")
     lines.append("  a message already sent is not retracted")
     ctx.report.result(
         {
@@ -1656,14 +1763,12 @@ def handle_unpublish(ctx: Context) -> Exit:
 
 @guarded("lesson")
 def handle_stage_set(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, _named(ctx))
-    finally:
-        store.close()
 
     staging = _staging(ctx)
     draft = staging.require(learner.id, learner.name)
+    _require_summary_draft(draft, learner.name)
     if draft.status == PUBLISHED:
         # Amending a published draft would fork it from the published record:
         # the record, not the draft, is what the next lesson is compared
@@ -1704,11 +1809,8 @@ def handle_stage_set(ctx: Context) -> Exit:
 
 
 def handle_remove(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, _named(ctx))
-    finally:
-        store.close()
 
     removed = _staging(ctx).remove(learner.id)
     ctx.report.result(

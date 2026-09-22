@@ -16,26 +16,28 @@ everything around it:
     verify  that the copy is complete, before anything is destroyed
     clear   the live pages, once a complete copy is filed
 
-`clear` enforces the rule itself. It does not trust that `verify` ran: it
-re-reads the filed copy, now, and refuses to empty anything unless one copy is
-complete: its name, where it sits, and every row. A copy verified yesterday
-and trashed today protects nothing, so the gate is read at clear time, every
-time. A copy made by hand satisfies it as well as a duplicated one; what the
-gate demands is that the copy exists and holds the course, not how it was
-made. Two paths stand deliberately outside the rule: `--session`, which
-empties a single page mid-course where there is no finished course to file,
-and `--dry-run`, which destroys nothing.
+`verify` writes a local receipt when a copy passes. `clear` still re-reads the
+filed copy, now, and checks it against that receipt: its name, where it sits,
+and every row. A copy verified yesterday and trashed today protects nothing.
+The receipt also lets an interrupted full clear resume without recomputing the
+course from a table that is already partly empty. A copy made by hand satisfies
+the gate as well as a duplicated one. Two paths stand deliberately outside the
+rule: `--session`, which empties a single page mid-course where there is no
+finished course to file, and `--dry-run`, which destroys nothing.
 """
 
 from __future__ import annotations
 
 import argparse
-from datetime import date
+import hashlib
+from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..adapters.db import open_store
+from ..adapters.db import store_scope
 from ..adapters.docs import open_docs
 from ..adapters.docs.base import DocPage, DocStore, TableRow
+from ..core.jsonio import backup_path, read_json, write_json
 from ..domain.archive import SpanFormat, archive_title, strip_span
 from ..domain.resolve import resolve_learner
 from ..errors import GateError, UpstreamError, UsageError
@@ -119,6 +121,33 @@ def _require_subcommand(ctx: Context) -> Exit:
         "`baton course` needs a subcommand.",
         remedy='Try `baton course plan "<name>" --json`.',
     )
+
+
+# -- verification receipts ---------------------------------------------------
+
+
+_RECEIPT_SCHEMA = 1
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _receipt_path(ctx: Context, learner_id: str) -> Path:
+    """A filesystem-safe receipt key for a learner's current course."""
+
+    digest = hashlib.sha256(learner_id.encode("utf-8")).hexdigest()
+    return ctx.config.state_dir / "courses" / f"{digest}.json"
+
+
+def _sessions_receipt(sessions: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for session in sessions:
+        if isinstance(session, dict):
+            rows.append({"number": int(session["number"]), "doc_id": str(session["doc_id"])})
+        else:
+            rows.append({"number": int(session.number), "doc_id": str(session.doc_id)})
+    return sorted(rows, key=lambda session: int(session["number"]))
 
 
 # -- shared reading ----------------------------------------------------------
@@ -220,22 +249,157 @@ def _fingerprints(rows: list[TableRow]) -> list[tuple[str, str, str]]:
     return sorted((row.title, row.date, row.status) for row in rows)
 
 
-def _read_copy(
-    docs: DocStore, plan: dict[str, Any], page_id: str
+def _write_receipt(
+    ctx: Context, plan: dict[str, Any], page_id: str, live_rows: list[TableRow]
+) -> None:
+    """Record the exact course a successful verification proved."""
+
+    write_json(
+        _receipt_path(ctx, str(plan["learner_id"])),
+        {
+            "schema": _RECEIPT_SCHEMA,
+            "verified_at": _now(),
+            "learner": {"id": plan["learner_id"], "name": plan["learner"]},
+            "course": {
+                "page_id": plan["course"]["page_id"],
+                "table_id": plan["course"]["table_id"],
+            },
+            "archive": {
+                "page_id": page_id,
+                "title": plan["archive"]["title"],
+                "label": plan["archive"]["label"],
+                "destination_id": plan["archive"]["destination_id"],
+            },
+            "rows": [list(row) for row in _fingerprints(live_rows)],
+            "sessions": _sessions_receipt(plan["sessions"]),
+        },
+    )
+
+
+def _normal_receipt(data: Any) -> tuple[dict[str, Any] | None, list[str]]:
+    """Validate and normalise a receipt without trusting its shape."""
+
+    problems: list[str] = []
+    if not isinstance(data, dict):
+        return None, ["the receipt is not a JSON object"]
+    if data.get("schema") != _RECEIPT_SCHEMA:
+        problems.append(f"schema is {data.get('schema')!r}, expected {_RECEIPT_SCHEMA}")
+
+    def section(name: str) -> dict[str, Any]:
+        value = data.get(name)
+        if not isinstance(value, dict):
+            problems.append(f"`{name}` is missing or is not an object")
+            return {}
+        return value
+
+    learner = section("learner")
+    course = section("course")
+    archive = section("archive")
+    for section_name, parent, key in (
+        ("learner", learner, "id"),
+        ("learner", learner, "name"),
+        ("course", course, "page_id"),
+        ("course", course, "table_id"),
+        ("archive", archive, "page_id"),
+        ("archive", archive, "title"),
+        ("archive", archive, "destination_id"),
+    ):
+        if not isinstance(parent.get(key), str) or not parent.get(key):
+            problems.append(f"`{section_name}.{key}` is missing or empty")
+
+    rows: list[tuple[str, str, str]] = []
+    raw_rows = data.get("rows")
+    if not isinstance(raw_rows, list):
+        problems.append("`rows` is missing or is not a list")
+    else:
+        for index, raw in enumerate(raw_rows):
+            if not isinstance(raw, list) or len(raw) != 3:
+                problems.append(f"row {index} is not a three-field fingerprint")
+                continue
+            rows.append((str(raw[0]), str(raw[1]), str(raw[2])))
+
+    sessions: list[dict[str, Any]] = []
+    raw_sessions = data.get("sessions")
+    if not isinstance(raw_sessions, list):
+        problems.append("`sessions` is missing or is not a list")
+    else:
+        for index, raw in enumerate(raw_sessions):
+            if not isinstance(raw, dict) or not isinstance(raw.get("doc_id"), str):
+                problems.append(f"session {index} is missing a document id")
+                continue
+            try:
+                sessions.append({"number": int(raw["number"]), "doc_id": raw["doc_id"]})
+            except (KeyError, TypeError, ValueError):
+                problems.append(f"session {index} has no valid session number")
+        sessions.sort(key=lambda session: int(session["number"]))
+
+    verified_at = data.get("verified_at")
+    if not isinstance(verified_at, str) or not verified_at:
+        problems.append("`verified_at` is missing or empty")
+
+    if problems:
+        return None, problems
+    return {
+        "learner": learner,
+        "course": course,
+        "archive": archive,
+        "rows": sorted(rows),
+        "sessions": sessions,
+        "verified_at": verified_at,
+    }, []
+
+
+def _read_receipt(ctx: Context, learner: Any) -> dict[str, Any] | None:
+    """Read the learner's receipt, or refuse when an existing one is unusable."""
+
+    path = _receipt_path(ctx, str(learner.id))
+    existed = path.exists()
+    receipt, problems = _normal_receipt(read_json(path, None))
+    if receipt is None and not existed:
+        return None
+    if receipt is None or problems:
+        raise GateError(
+            "The saved course verification cannot be used safely.",
+            missing=[{"field": "course_receipt", "path": str(path), "problems": problems}],
+            remedy=(
+                "Do not clear this course. Inspect the receipt and the archive before continuing."
+            ),
+        )
+    return receipt
+
+
+def _remove_receipt(ctx: Context, learner_id: str) -> None:
+    """Remove the receipt and its atomic-write backup."""
+
+    path = _receipt_path(ctx, learner_id)
+    for candidate in (backup_path(path), path):
+        candidate.unlink(missing_ok=True)
+
+
+def _inspect_copy(
+    docs: DocStore,
+    *,
+    course_page_id: str,
+    archive_title: str,
+    destination_id: str,
+    expected_rows: list[tuple[str, str, str]],
+    page_id: str,
 ) -> tuple[list[str], DocPage, list[TableRow]]:
     """Every problem with this page as the course's filed copy, with the page.
 
     The one standard both `verify` and `clear`'s gate hold a copy to: not the
     live page, not in the trash, rightly named, rightly filed, and holding
-    every row the live course holds.
+    every expected row. The expected rows normally come from the live course;
+    a verified receipt can also supply them after a clear was interrupted and
+    the live table no longer tells the truth.
     """
-    if page_id.replace("-", "") == plan["course"]["page_id"].replace("-", ""):
+    if page_id.replace("-", "") == course_page_id.replace("-", ""):
         # Not a nicety: for a studio that names its live page after the span it
         # is teaching, the copy's name and the live page's name are identical,
         # and every other check here would pass on the original.
         raise GateError(
             "That is the live course page, not a copy of it.",
-            missing=[{"field": "copy", "given": page_id, "course_page": plan["course"]["page_id"]}],
+            missing=[{"field": "copy", "given": page_id, "course_page": course_page_id}],
             remedy="Use the id the duplicate tool returned.",
         )
 
@@ -243,14 +407,10 @@ def _read_copy(
     copy = docs.get_page(page_id)
     if copy.trashed:
         problems.append("the copy is in the trash")
-    if copy.title != plan["archive"]["title"]:
-        problems.append(f"named `{copy.title}`, expected `{plan['archive']['title']}`")
-    if copy.parent_id.replace("-", "") != plan["archive"]["destination_id"].replace("-", ""):
-        problems.append(
-            "filed under {} rather than {}".format(
-                copy.parent_id or "nothing", plan["archive"]["destination_id"]
-            )
-        )
+    if copy.title != archive_title:
+        problems.append(f"named `{copy.title}`, expected `{archive_title}`")
+    if copy.parent_id.replace("-", "") != destination_id.replace("-", ""):
+        problems.append(f"filed under {copy.parent_id or 'nothing'} rather than {destination_id}")
 
     tables = [child for child in docs.list_children(page_id) if child.kind == "table"]
     rows: list[TableRow] = []
@@ -258,25 +418,98 @@ def _read_copy(
         problems.append("the copy has no course table yet: the duplicate may still be running")
     else:
         rows = docs.table_rows(tables[0].child_id)
-        live = docs.table_rows(plan["course"]["table_id"])
-        if len(rows) != len(live):
-            problems.append(f"holds {len(rows)} rows, the course has {len(live)}")
+        if len(rows) != len(expected_rows):
+            problems.append(f"holds {len(rows)} rows, the verified course has {len(expected_rows)}")
         else:
-            for copied, original in zip(_fingerprints(rows), _fingerprints(live), strict=True):
+            for copied, original in zip(_fingerprints(rows), expected_rows, strict=True):
                 if copied != original:
                     problems.append(f"row {original} was copied as {copied}")
                     break
     return problems, copy, rows
 
 
+def _same_id(left: str, right: str) -> bool:
+    return left.replace("-", "") == right.replace("-", "")
+
+
+def _receipt_scope_problems(
+    docs: DocStore, learner: Any, sessions: list[Any], receipt: dict[str, Any]
+) -> list[str]:
+    """Compare a receipt with the course this command addresses now."""
+
+    problems: list[str] = []
+    receipt_learner = receipt["learner"]
+    receipt_course = receipt["course"]
+    if str(receipt_learner.get("id")) != str(learner.id):
+        problems.append(f"receipt learner is {receipt_learner.get('id')!r}")
+    if str(receipt_learner.get("name")) != learner.name:
+        problems.append(f"receipt learner name is {receipt_learner.get('name')!r}")
+
+    course, table_id = _course_of(docs, sessions[0].doc_id)
+    if not _same_id(str(receipt_course.get("page_id")), course.doc_id):
+        problems.append(f"receipt course page is {receipt_course.get('page_id')!r}")
+    if not _same_id(str(receipt_course.get("table_id")), table_id):
+        problems.append(f"receipt course table is {receipt_course.get('table_id')!r}")
+
+    current = _sessions_receipt(sessions)
+    if receipt["sessions"] != current:
+        problems.append(f"receipt sessions are {receipt['sessions']!r}")
+    return problems
+
+
+def _live_receipt_problems(ctx: Context, docs: DocStore, receipt: dict[str, Any]) -> list[str]:
+    """Allow only the row changes a full clear itself can make.
+
+    A receipt must not turn a blind eye to somebody editing the live course
+    after verification. It must also survive meeting a table whose first rows
+    were already emptied by an interrupted clear.
+    """
+
+    expected = [tuple(row) for row in receipt["rows"]]
+    live = docs.table_rows(str(receipt["course"].get("table_id")))
+    if len(live) != len(expected):
+        return [f"the live course holds {len(live)} rows, the verification covered {len(expected)}"]
+
+    remaining = list(expected)
+    not_started = str(ctx.config.get("docs.statuses.not_started", ""))
+    allowed_statuses = {status for status in ("", not_started) if status}
+    problems: list[str] = []
+    for row in live:
+        current = (row.title, row.date, row.status)
+        if current in remaining:
+            remaining.remove(current)
+            continue
+
+        by_title = [item for item in remaining if item[0] == row.title]
+        if not by_title:
+            problems.append(f"row `{row.title}` is not in the verification")
+        elif row.date or row.status not in allowed_statuses:
+            original = by_title[0]
+            problems.append(f"row `{row.title}` is {current}, the verification covered {original}")
+        else:
+            remaining.remove(by_title[0])
+    return problems
+
+
+def _read_copy(
+    docs: DocStore, plan: dict[str, Any], page_id: str
+) -> tuple[list[str], DocPage, list[TableRow]]:
+    live = docs.table_rows(plan["course"]["table_id"])
+    return _inspect_copy(
+        docs,
+        course_page_id=plan["course"]["page_id"],
+        archive_title=plan["archive"]["title"],
+        destination_id=plan["archive"]["destination_id"],
+        expected_rows=_fingerprints(live),
+        page_id=page_id,
+    )
+
+
 def _plan(ctx: Context, *, allow_existing: bool) -> dict[str, Any]:
     """Everything the harness needs, and everything verify checks against."""
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store)
         sessions = _sessions(ctx, store, learner)
-    finally:
-        store.close()
 
     docs = open_docs(ctx.config)
     course, table_id = _course_of(docs, sessions[0].doc_id)
@@ -325,6 +558,7 @@ def _plan(ctx: Context, *, allow_existing: bool) -> dict[str, Any]:
 
     return {
         "learner": learner.name,
+        "learner_id": learner.id,
         "course": {
             "page_id": course.doc_id,
             "title": course.title,
@@ -342,6 +576,7 @@ def _plan(ctx: Context, *, allow_existing: bool) -> dict[str, Any]:
         },
         "span": {"first": first.isoformat(), "last": last.isoformat()},
         "rows": len(rows),
+        "sessions": [{"number": session.number, "doc_id": session.doc_id} for session in sessions],
         "renames_live_page": course.title == title,
     }
 
@@ -376,7 +611,16 @@ def handle_verify(ctx: Context) -> Exit:
     plan = _plan(ctx, allow_existing=True)
     docs = open_docs(ctx.config)
     page_id = str(ctx.args.page)
-    problems, copy, rows = _read_copy(docs, plan, page_id)
+    live = docs.table_rows(plan["course"]["table_id"])
+    expected_rows = _fingerprints(live)
+    problems, copy, rows = _inspect_copy(
+        docs,
+        course_page_id=plan["course"]["page_id"],
+        archive_title=plan["archive"]["title"],
+        destination_id=plan["archive"]["destination_id"],
+        expected_rows=expected_rows,
+        page_id=page_id,
+    )
 
     payload = {
         "ok": not problems,
@@ -395,6 +639,7 @@ def handle_verify(ctx: Context) -> Exit:
         )
         return Exit.GATE
 
+    _write_receipt(ctx, plan, page_id, live)
     ctx.report.result(
         payload,
         human=f"`{copy.title}` is complete: {len(rows)} rows, filed where it belongs.",
@@ -402,13 +647,54 @@ def handle_verify(ctx: Context) -> Exit:
     return Exit.OK
 
 
-def _require_archive(ctx: Context, docs: DocStore) -> dict[str, Any]:
+def _require_archive(
+    ctx: Context, docs: DocStore, learner: Any, sessions: list[Any]
+) -> dict[str, Any]:
     """The copy that stands between this clear and the course it empties.
 
-    `clear` does not remember that `verify` ran: it looks for the filed copy
-    now, holds it to the same standard `verify` holds, and refuses unless one
-    passes. That is the rule: no complete copy, no clear.
+    A verified receipt supplies the course as it was when verification passed.
+    Without one, the live course is still the only available source of truth
+    and the older read-at-clear-time gate applies.
     """
+    receipt = _read_receipt(ctx, learner)
+    if receipt is not None:
+        scope_problems = _receipt_scope_problems(docs, learner, sessions, receipt)
+        if scope_problems:
+            raise GateError(
+                "The saved verification is not for this course.",
+                missing=[{"field": "course_receipt", "problems": scope_problems}],
+                remedy=(
+                    "Do not clear this course. Confirm the learner, sessions, and "
+                    "course page before verifying the current course again."
+                ),
+            )
+
+        live_problems = _live_receipt_problems(ctx, docs, receipt)
+        archive_receipt = receipt["archive"]
+        problems, copy, _rows = _inspect_copy(
+            docs,
+            course_page_id=str(receipt["course"].get("page_id")),
+            archive_title=str(archive_receipt.get("title")),
+            destination_id=str(archive_receipt.get("destination_id")),
+            expected_rows=[tuple(row) for row in receipt["rows"]],
+            page_id=str(archive_receipt.get("page_id")),
+        )
+        if live_problems or problems:
+            raise GateError(
+                "The verified course or its archive changed after verification.",
+                missing=[{"field": "archive", "live": live_problems, "copy": problems}],
+                remedy=(
+                    "Do not clear this course and do not edit the archive to match "
+                    "the live table. Audit both, then verify a copy of the intended course again."
+                ),
+            )
+        return {
+            "title": copy.title,
+            "page_id": copy.doc_id,
+            "url": copy.url,
+            "verified_receipt": True,
+        }
+
     plan = _plan(ctx, allow_existing=True)
     candidates = plan["archive"]["already_filed"]
     if not candidates:
@@ -445,12 +731,9 @@ def _require_archive(ctx: Context, docs: DocStore) -> dict[str, Any]:
 
 
 def handle_clear(ctx: Context) -> Exit:
-    store = open_store(ctx.config)
-    try:
+    with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store)
         sessions = _sessions(ctx, store, learner)
-    finally:
-        store.close()
 
     wanted = ctx.args.session
     if wanted is not None:
@@ -485,7 +768,7 @@ def handle_clear(ctx: Context) -> Exit:
         # The full clear is the destructive one, so it carries the gate. A
         # partial clear is a mid-course tool: there is no finished course to
         # file, so demanding an archive for it would make it unusable.
-        archive = _require_archive(ctx, docs)
+        archive = _require_archive(ctx, docs, learner, sessions)
 
     cleared: list[int] = []
     skipped: list[dict[str, Any]] = []
@@ -524,5 +807,7 @@ def handle_clear(ctx: Context) -> Exit:
         )
         ctx.report.failure(payload, human=human)
         return Exit.UPSTREAM
+    if wanted is None:
+        _remove_receipt(ctx, str(learner.id))
     ctx.report.result(payload, human=human)
     return Exit.OK

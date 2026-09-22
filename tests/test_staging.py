@@ -97,6 +97,20 @@ def test_a_learner_with_no_records_gets_nothing_even_when_a_neighbour_has(tmp_pa
 # -- clearing drafts ---------------------------------------------------------
 
 
+def test_a_successful_retry_retires_the_previous_error(tmp_path: Path):
+    draft = _draft("ada", "Ada Whitfield", 3)
+    draft.record_target("youtube", "error", error="HttpError 400: invalidDescription")
+
+    draft.record_target("youtube", "ok", video_id="rPrspj5oNIk")
+
+    assert draft.targets["youtube"] == {
+        "status": "ok",
+        "attempts": 2,
+        "video_id": "rPrspj5oNIk",
+        "at": draft.targets["youtube"]["at"],
+    }
+
+
 def _store(tmp_path: Path) -> staging.StagingStore:
     return staging.StagingStore(tmp_path / "lessons")
 

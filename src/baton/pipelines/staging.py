@@ -21,13 +21,15 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..core import jsonio
-from ..domain.models import Piece
+from ..domain.models import Piece, Work
 from ..errors import UsageError
 
 #: Draft lifecycle. `summarised` means a validated summary is attached.
 STAGED = "staged"
 SUMMARISED = "summarised"
 PUBLISHED = "published"
+SUMMARY = "summary"
+RECORDING = "recording"
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]")
 
@@ -170,6 +172,12 @@ class LessonDraft:
     """The previous session's summary, for scope rather than for copying."""
     summary: dict[str, Any] | None = None
     """The validated structure. ``None`` until `ingest` accepts one."""
+    kind: str = SUMMARY
+    """Whether this draft publishes a teaching summary or a recorded work."""
+    work_id: str = ""
+    """The selected work when ``kind`` is ``recording``."""
+    work: Work | None = None
+    """The work as it existed when the recording lesson was completed."""
     status: str = STAGED
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
@@ -190,6 +198,9 @@ class LessonDraft:
             "corrected_context": self.corrected_context,
             "previous_context": self.previous_context,
             "summary": self.summary,
+            "kind": self.kind,
+            "work_id": self.work_id,
+            "work": self.work.to_dict() if self.work is not None else None,
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -209,6 +220,9 @@ class LessonDraft:
             corrected_context=str(data.get("corrected_context", "")),
             previous_context=str(data.get("previous_context", "")),
             summary=data.get("summary"),
+            kind=str(data.get("kind", SUMMARY)),
+            work_id=str(data.get("work_id", "")),
+            work=Work.from_dict(data["work"]) if isinstance(data.get("work"), dict) else None,
             status=str(data.get("status", STAGED)),
             created_at=str(data.get("created_at", _now())),
             updated_at=str(data.get("updated_at", _now())),
@@ -225,6 +239,8 @@ class LessonDraft:
             "session_number": self.session_number,
             "status": self.status,
             "has_summary": self.summary is not None,
+            "kind": self.kind,
+            "work_id": self.work_id,
             "targets": {name: state.get("status") for name, state in self.targets.items()},
             "updated_at": self.updated_at,
         }
@@ -239,6 +255,8 @@ class LessonDraft:
         """Record the outcome of publishing to one target."""
         state = dict(self.targets.get(name, {}))
         state["status"] = status
+        if status == "ok":
+            state.pop("error", None)
         state["at"] = _now()
         state["attempts"] = int(state.get("attempts", 0)) + 1
         state.update(extra)
@@ -387,6 +405,9 @@ class PublishedRecord:
                 "doc_url": doc_url,
                 "titles": draft.titles,
                 "short_message": short_message,
+                "kind": draft.kind,
+                "work_id": draft.work_id,
+                "work": draft.work.to_dict() if draft.work is not None else None,
                 # Kept alongside the message composed from it, because the two
                 # answer different questions later. The message is what the
                 # family was told; the summary is what the lesson was, and it

@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 from typing import TYPE_CHECKING, Any
 
-from ..adapters.db import open_store
+from ..adapters.db import store_scope
 from ..domain.models import Piece
 from ..errors import GateError, UpstreamError, UsageError
 from ..exits import Exit
@@ -80,10 +80,6 @@ def _require_subcommand(ctx: Context) -> Exit:
     )
 
 
-def _store(ctx: Context):
-    return open_store(ctx.config)
-
-
 def _get_or_raise(store, piece_id: str, *, label: str) -> Piece:
     piece = store.get_piece(piece_id)
     if piece is None:
@@ -109,11 +105,8 @@ def _piece_line(item: Piece, width: int) -> str:
 
 
 def handle_list(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         pieces = store.list_pieces()
-    finally:
-        store.close()
 
     payload = {"pieces": [item.to_dict() for item in pieces], "count": len(pieces)}
     if not pieces:
@@ -128,11 +121,8 @@ def handle_list(ctx: Context) -> Exit:
 def handle_search(ctx: Context) -> Exit:
     label = ctx.config.label("piece")
     query = ctx.args.query.casefold()
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         found = [item for item in store.list_pieces() if query in item.title.casefold()]
-    finally:
-        store.close()
 
     payload = {
         "query": ctx.args.query,
@@ -150,12 +140,9 @@ def handle_search(ctx: Context) -> Exit:
 
 def handle_show(ctx: Context) -> Exit:
     label = ctx.config.label("piece")
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         piece = _get_or_raise(store, ctx.args.id, label=label)
         users = [item for item in store.list_learners() if item.current_piece_id == piece.id]
-    finally:
-        store.close()
 
     payload = {"piece": piece.to_dict(), "used_by": [item.to_dict() for item in users]}
     lines = [
@@ -173,8 +160,7 @@ def handle_show(ctx: Context) -> Exit:
 
 
 def handle_add(ctx: Context) -> Exit:
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         created = store.add_piece(
             Piece(
                 id="",
@@ -184,8 +170,6 @@ def handle_add(ctx: Context) -> Exit:
                 sheet_link=ctx.args.sheet_link,
             )
         )
-    finally:
-        store.close()
 
     ctx.report.result(
         {"piece": created.to_dict()}, human=f"Added {created.title} (id={created.id})."
@@ -214,12 +198,9 @@ def handle_update(ctx: Context) -> Exit:
             remedy="Pass at least one of --title, --practice-track, --sheet-link, --source-link.",
         )
 
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         _get_or_raise(store, args.id, label=label)
         updated = store.update_piece(args.id, changes)
-    finally:
-        store.close()
 
     if updated is None:
         raise UsageError(
@@ -235,8 +216,7 @@ def handle_update(ctx: Context) -> Exit:
 
 def handle_remove(ctx: Context) -> Exit:
     label = ctx.config.label("piece")
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         piece = _get_or_raise(store, ctx.args.id, label=label)
         users = [item for item in store.list_learners() if item.current_piece_id == piece.id]
         if users:
@@ -255,8 +235,6 @@ def handle_remove(ctx: Context) -> Exit:
             return Exit.OK
 
         deleted = store.delete_piece(piece.id)
-    finally:
-        store.close()
 
     if not deleted:
         # get_piece just found it: a deletion that reports nothing removed

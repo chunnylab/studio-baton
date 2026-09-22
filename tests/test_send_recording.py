@@ -319,6 +319,64 @@ def test_pick_one_sends_newest_first_work_through_the_cli(rec_studio, capsys):
     assert "canon" not in text
 
 
+def test_a_recording_lesson_and_manual_recording_share_one_receipt(rec_studio, capsys):
+    from datetime import datetime, timezone
+
+    from baton.core import jsonio
+
+    profile, messenger = rec_studio
+    message = compose_recording(WORK_BOTH, learner_name="Ada Whitfield")
+    record = {
+        "learner_id": "1",
+        "learner_name": "Ada Whitfield",
+        "session_number": 3,
+        "doc_id": "doc-ada-03",
+        "doc_url": "https://example.invalid/lesson-3",
+        "kind": "recording",
+        "work_id": "7",
+        "work": {
+            "id": "7",
+            "learner_id": "1",
+            "title": WORK_BOTH.title,
+            "type": WORK_BOTH.type,
+            "video_link": YT,
+            "drive_link": DRIVE,
+            "performed_date": WORK_BOTH.performed_date,
+        },
+        "summary": None,
+        "short_message": message,
+        "published_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    path = profile / "state" / "published" / "1-3.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    jsonio.write_json(path, record)
+
+    assert (
+        run(
+            [
+                "--profile",
+                str(profile),
+                "--json",
+                "send",
+                "lesson",
+                "Ada Whitfield",
+                "--to",
+                "teacher",
+            ]
+        )
+        == Exit.OK
+    )
+    lesson = read(capsys)
+    assert lesson["kind"] == "recording"
+    assert lesson["message"] == message
+
+    assert call(rec_studio, "Ada Whitfield", "--to", "teacher", "--pick", "1") == Exit.GATE
+    refused = read(capsys)
+    assert refused["error"] == "gate"
+    assert "already sent" in refused["message"]
+    assert len(messenger.sent) == 1
+
+
 def test_pick_two_is_not_pick_one(rec_studio, capsys):
     _, messenger = rec_studio
 

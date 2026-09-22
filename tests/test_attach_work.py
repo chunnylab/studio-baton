@@ -22,7 +22,8 @@ from baton.adapters.docs.base import Block, DocStatus
 from baton.adapters.fakes import FakeDocStore
 from baton.cli.app import run
 from baton.exits import Exit
-from baton.pipelines.recording import attach_work, recording_blocks
+from baton.pipelines.recording import attach_work, compose_recording, recording_blocks
+from baton.pipelines.staging import PublishedRecord, StagingStore
 
 MIGRATIONS = Path(baton.__file__).resolve().parent / "migrations"
 
@@ -79,8 +80,11 @@ def studio(profile, monkeypatch):
             "doc-ada-03": DocStatus(doc_id="doc-ada-03", status="In progress"),
         },
         blocks={"doc-ada-03": []},
+        wording={"done": "Done", "in_progress": "In progress", "not_started": "Not started"},
     )
     monkeypatch.setattr("baton.cli.cmd_learner.open_docs", lambda _config: docs)
+    monkeypatch.setattr("baton.cli.cmd_lesson.open_docs", lambda _config: docs)
+    monkeypatch.setattr("baton.pipelines.recording.open_docs", lambda _config: docs)
     return profile, docs
 
 
@@ -229,6 +233,140 @@ def test_dry_run_writes_nothing(studio, capsys):
     assert studio[1].list_blocks("doc-ada-03") == []
 
 
+def test_adding_a_work_for_a_session_publishes_the_send_record(studio, capsys):
+    """A recording-only lesson follows the summary boundary, without a summary."""
+
+    profile, docs = studio
+    code = run(
+        [
+            "--profile",
+            str(profile),
+            "--json",
+            "learner",
+            "add-work",
+            "Ada Whitfield",
+            "--title",
+            "Blackbird: finished take",
+            "--type",
+            "cover",
+            "--video-link",
+            WORK["video_link"],
+            "--drive-link",
+            WORK["drive_link"],
+            "--date",
+            "2026-08-23",
+            "--session",
+            "3",
+        ]
+    )
+
+    assert code == Exit.OK
+    payload = out(capsys)
+    assert payload["kind"] == "recording"
+    assert payload["published"] is True
+
+    status = docs.get_status("doc-ada-03")
+    assert status.status == "Done"
+    assert status.date == "2026-08-23"
+    assert status.titles == "Blackbird: finished take"
+
+    blocks = docs.list_blocks("doc-ada-03")
+    page_text = "\n".join(block.text for block in blocks)
+    message = payload["message"]
+    assert all(line in page_text for line in message.splitlines() if line)
+    assert WORK["video_link"] in {block.url for block in blocks}
+    assert WORK["drive_link"] in {block.url for block in blocks}
+
+    draft = StagingStore(profile / "state" / "lessons").get("1")
+    assert draft is not None
+    assert draft.kind == "recording"
+    assert draft.summary is None
+    assert draft.status == "published"
+    assert draft.work is not None
+    assert draft.work.title == "Blackbird: finished take"
+
+    record = PublishedRecord(profile / "state" / "published").get("1", 3)
+    assert record is not None
+    assert record["kind"] == "recording"
+    assert record["work"]["title"] == "Blackbird: finished take"
+    assert record["short_message"] == message
+    assert record["blocks"]
+
+    assert (
+        run(["--profile", str(profile), "--json", "lesson", "contract", "Ada Whitfield"])
+        == Exit.USAGE
+    )
+    assert "recording" in json.loads(capsys.readouterr().out)["message"]
+
+
+def test_unpublishing_a_recording_lesson_restores_the_open_draft(studio, capsys):
+    profile, docs = studio
+    run(
+        [
+            "--profile",
+            str(profile),
+            "--json",
+            "learner",
+            "add-work",
+            "Ada Whitfield",
+            "--title",
+            "Blackbird: withdrawn take",
+            "--video-link",
+            WORK["video_link"],
+            "--session",
+            "3",
+        ]
+    )
+    capsys.readouterr()
+    before = len(docs.list_blocks("doc-ada-03"))
+
+    assert (
+        run(["--profile", str(profile), "--json", "lesson", "unpublish", "Ada Whitfield"])
+        == Exit.OK
+    )
+    payload = out(capsys)
+
+    assert payload["removed"] == before
+    assert docs.list_blocks("doc-ada-03") == []
+    assert docs.get_status("doc-ada-03").status == "In progress"
+    assert PublishedRecord(profile / "state" / "published").get("1", 3) is None
+    draft = StagingStore(profile / "state" / "lessons").get("1")
+    assert draft is not None
+    assert draft.kind == "recording"
+    assert draft.status == "staged"
+
+    assert (
+        run(["--profile", str(profile), "--json", "lesson", "publish", "Ada Whitfield"]) == Exit.OK
+    )
+    capsys.readouterr()
+    assert docs.get_status("doc-ada-03").status == "Done"
+    assert PublishedRecord(profile / "state" / "published").get("1", 3) is not None
+
+
+def test_completing_an_existing_work_publishes_it_as_the_lesson(studio, capsys):
+    profile, docs = studio
+
+    assert (
+        call(
+            studio,
+            "attach-work",
+            "Ada Whitfield",
+            "--pick",
+            "1",
+            "--complete",
+            "--session",
+            "3",
+        )
+        == Exit.OK
+    )
+    payload = out(capsys)
+
+    assert payload["kind"] == "recording"
+    assert payload["published"] is True
+    assert docs.get_status("doc-ada-03").status == "Done"
+    assert PublishedRecord(profile / "state" / "published").get("1", 3) is not None
+
+
 def test_running_it_twice_is_still_one_section(studio, capsys):
     call(studio, "attach-work", "Ada Whitfield", "--pick", "1")
     capsys.readouterr()
@@ -238,3 +376,46 @@ def test_running_it_twice_is_still_one_section(studio, capsys):
     payload = out(capsys)
     assert payload["appended"] == 0
     assert len(studio[1].list_blocks("doc-ada-03")) == 4
+
+
+def test_a_retry_claims_the_existing_section_instead_of_losing_ownership(studio):
+    docs = studio[1]
+    message = compose_recording(_work(), learner_name="Ada Whitfield")
+    first = attach_work(docs, "doc-ada-03", _work(), message=message)
+
+    second = attach_work(docs, "doc-ada-03", _work(), message=message)
+
+    assert second["appended"] == 0
+    assert [entry["id"] for entry in second["blocks"]] == [entry["id"] for entry in first["blocks"]]
+    assert len(docs.list_blocks("doc-ada-03")) == len(first["blocks"])
+
+
+def test_a_complete_recording_still_writes_the_message_over_bare_links(studio, capsys):
+    profile, docs = studio
+    docs.blocks["doc-ada-03"] = [
+        Block(id="old-video", type="video", url=WORK["video_link"]),
+        Block(id="old-drive", type="bookmark", url=WORK["drive_link"]),
+    ]
+
+    assert (
+        call(
+            studio,
+            "attach-work",
+            "Ada Whitfield",
+            "--pick",
+            "1",
+            "--complete",
+            "--session",
+            "3",
+        )
+        == Exit.OK
+    )
+    payload = out(capsys)
+
+    assert payload["appended"] > 0
+    assert payload["message"]
+    page_text = "\n".join(block.text for block in docs.list_blocks("doc-ada-03"))
+    assert all(line in page_text for line in payload["message"].splitlines() if line)
+    record = PublishedRecord(profile / "state" / "published").get("1", 3)
+    assert record is not None
+    assert record["blocks"]

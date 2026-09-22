@@ -119,6 +119,20 @@ class Work:
             "performed_date": self.performed_date,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Work:
+        """Read a work snapshot stored beside a published lesson."""
+
+        return cls(
+            id=str(data.get("id", "")),
+            learner_id=str(data.get("learner_id", "")),
+            title=str(data.get("title", "")),
+            type=str(data.get("type", "performance")),
+            video_link=str(data.get("video_link", "")),
+            drive_link=str(data.get("drive_link", "")),
+            performed_date=str(data.get("performed_date", "")),
+        )
+
 
 #: The seven weekday names a slot may carry, Monday first. These are the
 #: words the Notion dashboard's day tags use, chosen over integers so the two

@@ -59,8 +59,8 @@ own speech layer, but the operational CLI is not coupled to one ASR model.
 | `baton learner` | Enrol and look up learners, sessions, pieces, and past work |
 | `baton song` | List, search, add, edit, and remove pieces in the shared catalogue |
 | `baton course` | Plan, verify, and clear a finished course after it is archived |
-| `baton lesson` | Stage a lesson, validate a model-written summary, publish it |
-| `baton send` | Send a lesson summary or a recorded work's links (Drive/YouTube), refusing to send anything incomplete |
+| `baton lesson` | Stage and publish a teaching summary, or resume a recording-only lesson |
+| `baton send` | Send a published summary or recording, refusing to send anything incomplete |
 | `baton video` | Collect recordings → encode → publish → link back, resumable |
 | `baton calendar` | Book lessons, keeping documents and calendar in step |
 | `baton notes` | Push a note or a Markdown file to a documents page |
@@ -188,6 +188,14 @@ that does have a recording keeps it regardless. What is sent is what was
 *published*: the message comes from the record stored at publish time, and
 the links are Baton's own, which is why links are forbidden inside the
 summary a model writes.
+
+A lesson that consists of a finished recording does not need a fabricated
+teaching summary. `learner add-work "Ada Whitfield" --session 3` records the
+work, writes the same record message and media links to the Notion session
+page, marks that session done, and stores a recording published record. `send
+lesson` and `send batch` then send that recording for Ada while other learners
+still receive their summaries; the duplicate gate uses the selected work id,
+so the same recording cannot go out again through `send recording`.
 
 Several learners go through one invocation. A refusal for one does not abandon
 the rest, and the exit code plus the report say exactly which did not go:

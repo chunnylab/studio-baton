@@ -75,3 +75,17 @@ def test_format_description_is_deterministic():
     second = format_description(SUMMARY, instrument="กีตาร์", week=9, student_name="Ada")
 
     assert first == second
+
+
+def test_format_description_replaces_angle_brackets_with_arrows():
+    summary = {
+        "overview": ["Chord path: Bbm > C#maj7"],
+        "covered": [{"topic": "Second pass", "detail": "F#maj7 < C#maj7"}],
+    }
+
+    description = format_description(summary)
+
+    assert "Chord path: Bbm → C#maj7" in description
+    assert "Second pass: F#maj7 ← C#maj7" in description
+    assert "<" not in description
+    assert ">" not in description

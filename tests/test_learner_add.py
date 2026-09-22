@@ -165,7 +165,7 @@ def test_add_a_malformed_pages_token_is_refused(studio, capsys):
 @pytest.fixture
 def fake_studio(profile, monkeypatch):
     fake = FakeLearnerStore()
-    monkeypatch.setattr("baton.cli.cmd_learner.open_store", lambda _config: fake)
+    monkeypatch.setattr("baton.adapters.db.open_store", lambda _config: fake)
     return profile, fake
 
 

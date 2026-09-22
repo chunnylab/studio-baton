@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import html
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
@@ -197,11 +198,10 @@ def serve_checklist(
 
 def run_checklist(ctx: Context, *, port: int) -> Exit:
     """`learner deactivate --serve`: open the checklist, apply the ticks."""
-    from .cmd_learner import _store
+    from ..adapters.db import store_scope
 
     deactivated: list[str] = []
-    store = _store(ctx)
-    try:
+    with store_scope(ctx.config) as store:
         label = ctx.config.label("learner")
 
         def page() -> str:
@@ -228,13 +228,10 @@ def run_checklist(ctx: Context, *, port: int) -> Exit:
             return applied, failed
 
         ctx.report.step(f"checklist ready: http://127.0.0.1:{port}/ (Ctrl-C to finish)")
-        serve_checklist(port=port, page=page, apply=apply, log=ctx.report.step)
-    except KeyboardInterrupt:
-        # The teacher closed the screen, not the studio: a normal exit whose
-        # envelope reports what actually landed.
-        pass
-    finally:
-        store.close()
+        with suppress(KeyboardInterrupt):
+            # The teacher closed the screen, not the studio: a normal exit whose
+            # envelope reports what actually landed.
+            serve_checklist(port=port, page=page, apply=apply, log=ctx.report.step)
 
     ctx.report.result(
         {

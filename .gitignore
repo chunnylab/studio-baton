@@ -49,6 +49,11 @@ tmp/
 # known defects before they are fixed and stay on the machine.
 /review/
 
+# Local-only deployment runbook. It names the studio's private runtime
+# (container paths, overlay repo, pin locations), so it never reaches this
+# public repo; VERSIONING.md links here for whoever holds the working tree.
+/RUNTIME.md
+
 # Local-only work briefs. These carry raw session transcripts with real
 # learner names and page links — the reason they never reach this repo.
 /briefs/

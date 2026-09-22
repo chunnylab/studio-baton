@@ -595,7 +595,7 @@ as the CLI operates it. It changes no command, schema, exit code, or adapter.
   they read as direct Thai instructions while preserving their keys and
   operational meaning.
 
-## 1.0.0
+## 1.0.0 (2026-08-30)
 
 The version the project was working towards: the whole cycle (booking,
 video, summaries, delivery) has now run end to end on real teaching days, so
@@ -636,7 +636,7 @@ the package declares itself production/stable instead of alpha.
 - The trove classifier moves from `Development Status :: 3 - Alpha` to
   `:: 5 - Production/Stable`.
 
-## 0.7.0
+## 0.7.0 (2026-08-29)
 
 The 2026-08-29 logic audit, in the recovery direction: what to do when
 something has already gone out wrong, and the per-learner differences the
@@ -717,7 +717,7 @@ database had been carrying with nothing reading them.
 - `get_status` no longer lists a whole page to count blocks for the six
   callers that only wanted a status word or a date.
 
-## 0.6.0
+## 0.6.0 (2026-08-28)
 
 Four items from the studio's 2026-08 production-issue list. Exit codes are
 unchanged throughout; two long-standing refusals were narrowed on purpose,
@@ -760,7 +760,7 @@ and both narrowings are named below.
   the summary: a summary rejected over a spelling is a summary that stops
   being produced.
 
-## 0.5.0
+## 0.5.0 (2026-08-28)
 
 Four gaps closed from the 2026-08-28 port-gap audit against the studio's
 legacy scripts. Everything here is additive: no existing command's output
@@ -816,7 +816,7 @@ subcommand or config-gated off by default.
   studio-specific columns the model has no field for, and refuses an
   unmapped one before any write happens.
 
-## 0.4.2
+## 0.4.2 (2026-08-28)
 
 Everything here came out of running 0.4.1 through a real teaching day
 (2026-08-27) and reading the summary it produced.

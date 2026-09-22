@@ -4,6 +4,80 @@ Notable changes per release. Anything that changes what a studio has to do is
 under **Upgrading**; the rest is grouped by what it affects. Every release back
 to 0.1.0 has an entry, and every tag carries a GitHub release.
 
+## 1.9.0 (2026-09-22)
+
+Recording sessions no longer need a teaching summary invented for them. A
+finished work can now be the lesson: Baton writes the family-facing record
+message and its media links to Notion, marks the session done, and sends that
+same recording through the ordinary lesson paths.
+
+### Lessons and recordings
+
+- **`baton learner add-work NAME ... --session N`.** Records the work and
+  completes that in-progress lesson in one command. The page receives the
+  exact record message under the existing record heading plus YouTube and
+  Drive as native blocks; the session is marked done; staging and a
+  per-session published record are written. Omit `--session` to keep the old
+  library-only behaviour.
+- **`baton learner attach-work NAME --pick N --complete`.** The recovery and
+  existing-work path. It resolves the work explicitly, then follows the same
+  recording publish boundary. Bare links already on the page do not stop the
+  record message from being written, and links Baton did not write are never
+  claimed for unpublish.
+- **`baton lesson publish NAME` resumes a recording draft.** If the document
+  write stops partway, the draft names the selected work and re-running
+  finishes it without appending a second copy. `contract`, `ingest`, `render`,
+  and `stage-set` refuse a recording draft instead of accepting a fabricated
+  summary.
+- Recording lessons carry `kind: recording`, a work id, and a work snapshot.
+  Legacy drafts and records without `kind` remain teaching summaries.
+- **`send lesson` and `send batch` send the published recording** when the
+  learner's latest record is a recording, and the ordinary summary otherwise.
+  The message comes from the published record, so a later work edit cannot
+  silently change what is sent.
+- Recording sends share the `recording|learner|work` receipt identity with
+  `send recording`. A recording delivered by batch cannot be delivered again
+  through the manual recording command, and vice versa.
+- `send readiness` reports each learner's deliverable kind and gates a
+  recording on its work snapshot, link, document link, and session number
+  rather than asking for a summary. `send aftermath` checks the matching
+  work-based receipt and reports an unpublished recording draft as recording
+  work rather than a missing summary.
+- `lesson unpublish` removes only the recording blocks Baton can attribute,
+  restores an in-progress session, and returns the draft to the recording
+  state. The database work row is kept.
+
+### Courses
+
+- **`course verify` now writes a local receipt** containing the learner,
+  course and table ids, archive page/title/destination, row fingerprints,
+  session numbers and document ids, and verification time.
+- **`course clear` re-reads the archive and validates it against that
+  receipt.** An interrupted full clear resumes without recomputing the course
+  from a partly emptied table. A live row is accepted only when it still
+  matches the receipt or has only the values a clear itself writes; any other
+  post-verification edit refuses safely.
+- A changed, trashed, or mismatched archive refuses clear. The receipt is
+  removed only after every session clears successfully and is retained when an
+  upstream write fails. Profiles without a receipt keep the previous
+  read-the-live-course gate.
+
+### Video
+
+- YouTube descriptions replace `<` and `>` with directional arrows before
+  submission. This removes the character class behind the production
+  `invalidDescription` failure without changing musical notation.
+- A successful YouTube retry removes the previous error from staging and the
+  published record, so a target no longer reports `status: ok` alongside the
+  error that has already been cleared.
+
+### Upgrading
+
+Nothing to do: no database column, configuration key, or exit code changes.
+Existing works stay library works until one is explicitly attached to and
+published for an open session, and existing published records continue to send
+as teaching summaries.
+
 ## 1.8.0 (2026-09-15)
 
 The weekly schedule lived in the database but the calendar still had to be

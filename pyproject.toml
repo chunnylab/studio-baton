@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "studio-baton"
-version = "1.8.0"
+version = "1.9.0"
 description = "Scripted, fail-closed operations toolkit for one-to-one teaching studios: learners, lesson summaries, messaging, video, and calendar."
 readme = "README.md"
 requires-python = ">=3.10"

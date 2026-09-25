@@ -14,6 +14,14 @@ lesson --without-video <code>`` is then not a bypass: it is where that
 person's answer re-enters the process that asked the question, and
 :func:`verify_and_consume` accepts it exactly once.
 
+Which person the code reaches is the studio's to name, once, in the profile
+(``summary.video_waiver.recipient``), not a per-invocation choice for
+whatever is holding the command line. The question "send this with no
+recording?" belongs to whoever answers for the studio; the first shipped
+remedy pointed at the lesson's own recipient instead, and an agent following
+it faithfully texted the code to someone who could have answered the owner's
+question without the owner ever seeing it.
+
 Scoped to one learner's one session and expiring on its own, so a code
 overheard or logged somewhere is not a standing key to anything.
 """
@@ -117,9 +125,22 @@ class VideoWaivers:
     # -- answering ---------------------------------------------------------
 
     def verify_and_consume(
-        self, learner_id: str, session_number: Any, code: str, *, learner_name: str, label: str
+        self,
+        learner_id: str,
+        session_number: Any,
+        code: str,
+        *,
+        learner_name: str,
+        label: str,
+        recipient_hint: str = "",
     ) -> None:
         """Accept a person's answer, once.
+
+        Args:
+            recipient_hint: The contact the CLI's remedy should name when the
+                profile has one configured, so a refused code steers the
+                person asking toward the same approver the original request
+                reached. Empty means the remedy stays generic.
 
         Raises:
             NeedsHumanError: No code was requested for this session, the one
@@ -136,12 +157,13 @@ class VideoWaivers:
         entry = entries.get(_key(learner_id, session_number))
 
         def refuse(reason: str) -> None:
+            target = f"--to {recipient_hint}" if recipient_hint else "--to <contact>"
             raise NeedsHumanError(
                 f"{reason} for {learner_name}'s {label} {session_number}.",
                 candidates=[],
                 details={"learner": learner_name, "session_number": session_number},
                 remedy="Nothing was sent. Run `baton send video-waiver "
-                f'"{learner_name}" --to <contact>` to text a fresh code, then '
+                f'"{learner_name}" {target}` to text a fresh code, then '
                 "re-run this with --without-video <the code they were sent>.",
             )
 

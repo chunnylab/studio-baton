@@ -506,6 +506,23 @@ def _relax_gate(profile) -> None:
     )
 
 
+def _set_waiver_recipient(profile, contact) -> None:
+    """Name the studio's approver for no-recording sends, as a studio that
+    has decided who answers that question would."""
+    config = profile / "baton.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + textwrap.dedent(
+            f"""
+            summary:
+              video_waiver:
+                recipient: {contact}
+            """
+        ),
+        encoding="utf-8",
+    )
+
+
 def publish(profile, learner_id, **overrides):
     """Write a published record directly, as `lesson publish` would have."""
     from datetime import datetime, timezone
@@ -848,6 +865,99 @@ def test_video_waiver_dry_run_previews_without_sending_or_writing_state(studio, 
     from baton.core.video_waivers import VideoWaivers
 
     assert VideoWaivers.for_state(profile / "state")._load() == {}
+
+
+def test_video_waiver_defaults_to_the_configured_recipient(studio, capsys):
+    """Without `--to`, the code goes to the contact the profile names, and
+    the result says who that was: the studio decides once in baton.yaml who
+    answers the no-recording question, rather than leaving that choice to
+    whatever is holding the command line."""
+    profile, messenger, docs = studio
+    publish(profile, "1")
+    docs.blocks["doc-ada-03"] = []
+    _set_waiver_recipient(profile, "me")
+
+    assert call(studio, "video-waiver", "Ada Whitfield") == Exit.OK
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sent_to"] == "me"
+    assert messenger.sent[0][0] == "U-teacher"
+
+
+def test_an_explicit_to_wins_over_the_configured_default(studio, capsys):
+    profile, _messenger, docs = studio
+    publish(profile, "1")
+    docs.blocks["doc-ada-03"] = []
+    _set_waiver_recipient(profile, "me")
+
+    assert call(studio, "video-waiver", "Ada Whitfield", "--to", "teacher") == Exit.OK
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sent_to"] == "teacher"
+
+
+def test_no_recipient_configured_or_passed_is_a_config_error(studio, capsys):
+    """A studio that has never named an approver gets exit 2 and an
+    instruction to name one, not a silent choice made by the command."""
+    profile, messenger, docs = studio
+    publish(profile, "1")
+    docs.blocks["doc-ada-03"] = []
+
+    assert call(studio, "video-waiver", "Ada Whitfield") == Exit.CONFIG
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"] == "config"
+    assert messenger.sent == []
+
+
+def test_the_no_recording_stop_no_longer_echoes_the_lesson_recipient(studio, capsys):
+    """The remedy is machine-read by whatever drives Baton. It used to end
+    with `--to {the lesson's own recipient}`, and a following agent texted
+    the code to exactly that person: someone who could have answered the
+    owner's question without the owner ever seeing it. With an approver
+    configured, the remedy needs no `--to` at all."""
+    profile, _messenger, docs = studio
+    publish(profile, "1")
+    docs.blocks["doc-ada-03"] = []
+    _set_waiver_recipient(profile, "me")
+
+    assert call(studio, "lesson", "Ada Whitfield", "--to", "teacher") == Exit.NEEDS_HUMAN
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "--to" not in payload["remedy"]
+    assert payload["remedy"].count("video-waiver") == 1
+
+
+def test_the_no_recording_stop_names_whose_call_it_is_when_nobody_is_configured(studio, capsys):
+    profile, _messenger, docs = studio
+    publish(profile, "1")
+    docs.blocks["doc-ada-03"] = []
+
+    assert call(studio, "lesson", "Ada Whitfield", "--to", "teacher") == Exit.NEEDS_HUMAN
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "teacher" not in payload["remedy"]
+    assert "answers for this studio" in payload["remedy"]
+
+
+def test_a_refused_code_points_back_at_the_configured_approver(studio, capsys):
+    """A wrong or expired code refuses through the store's own remedy, which
+    must steer the retry at the same approver the original request reached."""
+    profile, messenger, docs = studio
+    publish(profile, "1")
+    docs.blocks["doc-ada-03"] = []
+    _set_waiver_recipient(profile, "me")
+    _request_waiver(studio, capsys)
+    capsys.readouterr()
+
+    refused = call(
+        studio, "lesson", "Ada Whitfield", "--to", "teacher", "--without-video", "WRONG1"
+    )
+    assert refused == Exit.NEEDS_HUMAN
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "--to me" in payload["remedy"]
+    assert len(messenger.sent) == 1  # the waiver text only; the refusal sent nothing
 
 
 def test_without_video_sends_with_no_video_section_after_a_waiver_is_answered(studio, capsys):

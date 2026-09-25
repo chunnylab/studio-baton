@@ -179,8 +179,10 @@ studio sets its own standard of completeness; the block itself is not
 negotiable. One field has a way past the block, and it goes through a person
 by construction, not by convention: when a session has no `video_link` on its
 document, `send lesson` stops on exit 3 and asks. `send video-waiver` texts a
-one-time code to a configured contact (never printed or returned by the
-command that sends it, only delivered), and `--without-video <code>` is where
+one-time code to the contact the profile names in
+`summary.video_waiver.recipient`, or to `--to` when that one invocation names
+someone (never printed or returned by the command that sends it, only
+delivered), and `--without-video <code>` is where
 that person's answer, read off their own phone, re-enters Baton. A bare
 `--without-video` is not a working flag; nothing running the CLI, agent or
 person, can produce a valid code without someone having read one. A session

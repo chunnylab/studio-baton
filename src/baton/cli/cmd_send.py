@@ -100,17 +100,28 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Text a confirmation code for sending a lesson with no video.",
         description=(
             "For a session `send lesson` refused on exit 3 because no "
-            "recording is on the document. Texts a one-time code to --to "
-            "through the studio's own messenger and stops: the code is never "
-            "printed or returned here, only sent. A person reads it off their "
-            "phone and gives it back as `send lesson ... --without-video "
-            "<code>`, which is the only way the confirmation re-enters Baton. "
-            "The code answers this learner's this session alone and expires "
+            "recording is on the document. Texts a one-time code to --to, or "
+            "to `summary.video_waiver.recipient` from the profile when --to "
+            "is omitted, through the studio's own messenger and stops: the "
+            "code is never printed or returned here, only sent. A person "
+            "reads it off their phone and gives it back as `send lesson "
+            "... --without-video <code>`, which is the only way the "
+            "confirmation re-enters Baton. The code answers this learner's "
+            "this session alone and expires "
             f"after {DEFAULT_TTL_MINUTES:g} minutes unanswered."
         ),
     )
     waiver.add_argument("name", metavar="NAME")
-    waiver.add_argument("--to", metavar="CONTACT", required=True, help="Configured contact name.")
+    waiver.add_argument(
+        "--to",
+        metavar="CONTACT",
+        help=(
+            "Configured contact name. Defaults to "
+            "summary.video_waiver.recipient from the profile, which names "
+            "the person who answers for the studio rather than leaving that "
+            "choice to whoever runs the command."
+        ),
+    )
     waiver.add_argument(
         "--session", type=int, default=None, help="Defaults to the latest published session."
     )
@@ -575,17 +586,39 @@ def _send_one(
             # block, and `candidates` stays empty here for the same reason it
             # does on the no-code path below: this is not data to pick from.
             code = getattr(ctx.args, "without_video", None)
+            approver = str(ctx.config.get("summary.video_waiver.recipient", "") or "").strip()
             if code:
                 waivers = VideoWaivers.for_state(
                     ctx.config.state_dir,
                     float(ctx.config.get("summary.video_waiver.ttl_minutes", DEFAULT_TTL_MINUTES)),
                 )
                 waivers.verify_and_consume(
-                    learner.id, session_number, code, learner_name=learner.name, label=label
+                    learner.id,
+                    session_number,
+                    code,
+                    learner_name=learner.name,
+                    label=label,
+                    recipient_hint=approver,
                 )
                 required = [name for name in required if name != "video_link"]
                 optional = [*optional, "video_link"]
             else:
+                # The remedy is machine-read by whatever drives Baton, so who
+                # it names matters as much as the command it gives. Echoing
+                # `--to` back once steered a following agent into texting the
+                # code to the lesson's own recipient: a person who could then
+                # answer the owner's question without the owner ever seeing
+                # it. With an approver configured, the remedy needs no --to at
+                # all; without one, it says whose phone the code belongs on.
+                if approver:
+                    request = f'`baton send video-waiver "{learner.name}"`'
+                    reaches = f"a confirmation code to {approver}"
+                else:
+                    request = f'`baton send video-waiver "{learner.name}" --to <contact>`'
+                    reaches = (
+                        "a confirmation code to the person who answers for "
+                        "this studio, not whoever this message is addressed to"
+                    )
                 raise NeedsHumanError(
                     f"No recording link was found on the document for "
                     f"{learner.name}'s {label} {session_number} message, and "
@@ -597,9 +630,8 @@ def _send_one(
                         "missing": ["video_link"],
                     },
                     remedy="Nothing was sent. Either put the recording on the "
-                    "lesson document and re-run, or run `baton send "
-                    f'video-waiver "{learner.name}" --to {ctx.args.to}` to text '
-                    "a confirmation code to a person, then re-run this with "
+                    "lesson document and re-run, or run "
+                    f"{request} to text {reaches}, then re-run this with "
                     "--without-video <the code they were sent>.",
                 )
         return send_lesson(
@@ -650,7 +682,26 @@ def handle_video_waiver(ctx: Context) -> Exit:
     Reaching it means reading the message it was sent in. That is the entire
     mechanism: nothing driving this CLI, agent or person, can answer the
     question `send lesson` asked without first having read that message.
+
+    Who that person is comes from ``--to``, else from the profile's
+    ``summary.video_waiver.recipient``. The default is deliberate: the
+    question the code asks belongs to whoever answers for the studio, and a
+    recipient chosen per invocation by whatever is holding the command line
+    once went to the lesson's own addressee instead.
     """
+    recipient = (
+        ctx.args.to or str(ctx.config.get("summary.video_waiver.recipient", "") or "").strip()
+    )
+    if not recipient:
+        raise ConfigError(
+            "`send video-waiver` has nobody to text a confirmation code to.",
+            remedy=(
+                "Pass `--to <contact>`, or set summary.video_waiver.recipient "
+                "in the profile to the person who answers for this studio, so "
+                "the code reaches the same decision-maker every time instead "
+                "of whoever happens to run the command."
+            ),
+        )
     label = ctx.config.label("session")
     with store_scope(ctx.config) as store:
         learner = _resolve(ctx, store, ctx.args.name)
@@ -690,7 +741,7 @@ def handle_video_waiver(ctx: Context) -> Exit:
         )
 
     messenger = open_chat(ctx.config)
-    recipient_id = messenger.resolve(ctx.args.to)
+    recipient_id = messenger.resolve(recipient)
     ttl_minutes = float(ctx.config.get("summary.video_waiver.ttl_minutes", DEFAULT_TTL_MINUTES))
 
     def _message(code: str) -> str:
@@ -709,16 +760,16 @@ def handle_video_waiver(ctx: Context) -> Exit:
                 "dry_run": True,
                 "learner": learner.name,
                 "session_number": session_number,
-                "would_send_to": ctx.args.to,
+                "would_send_to": recipient,
                 "message": preview,
             },
-            human=f"Would text a confirmation code to {ctx.args.to} for "
+            human=f"Would text a confirmation code to {recipient} for "
             f"{learner.name}'s {label} {session_number}:\n\n{preview}",
         )
         return Exit.OK
 
     waivers = VideoWaivers.for_state(ctx.config.state_dir, ttl_minutes)
-    code = waivers.request(learner.id, session_number, sent_to=ctx.args.to)
+    code = waivers.request(learner.id, session_number, sent_to=recipient)
     messenger.send(recipient_id, _message(code))
 
     ctx.report.result(
@@ -726,10 +777,10 @@ def handle_video_waiver(ctx: Context) -> Exit:
             "ok": True,
             "learner": learner.name,
             "session_number": session_number,
-            "sent_to": ctx.args.to,
+            "sent_to": recipient,
             "expires_in_minutes": ttl_minutes,
         },
-        human=f"Texted a confirmation code to {ctx.args.to} for {learner.name}'s "
+        human=f"Texted a confirmation code to {recipient} for {learner.name}'s "
         f"{label} {session_number}. It expires in {ttl_minutes:g} minutes.",
     )
     return Exit.OK

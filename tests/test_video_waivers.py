@@ -122,6 +122,25 @@ def test_the_refusal_names_how_to_get_a_real_code(tmp_path):
     assert excinfo.value.candidates == []
 
 
+def test_the_refusal_names_the_configured_recipient_when_one_is_given(tmp_path):
+    """A refusal is read by whoever is retrying, which is exactly whoever
+    mis-typed the code: once the profile has named an approver, the remedy
+    points the retry at the same person the original request reached, and a
+    wrong guess on the way there never consumes the real code."""
+    waivers = VideoWaivers(tmp_path / "w.json")
+    code = waivers.request("1", 3, sent_to="me")
+
+    with pytest.raises(NeedsHumanError) as plain:
+        waivers.verify_and_consume("1", 3, "WRONGX", **KW)
+    with pytest.raises(NeedsHumanError) as hinted:
+        waivers.verify_and_consume("1", 3, "WRONGX", **KW, recipient_hint="me")
+
+    assert "--to <contact>" in (plain.value.remedy or "")
+    assert "--to me" in (hinted.value.remedy or "")
+
+    waivers.verify_and_consume("1", 3, code, **KW)
+
+
 def test_a_generated_code_avoids_ambiguous_characters():
     """Read aloud or typed on a phone, 0/O and 1/I/L should never need a
     second look to tell apart."""

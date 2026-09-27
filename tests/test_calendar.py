@@ -424,6 +424,30 @@ def test_cancelling_removes_the_event_then_rolls_the_document_back():
     assert len(result["deleted"]) == 1
 
 
+def test_cancelling_clears_the_date_the_booking_wrote():
+    """Booking writes status and date together; a cancel that restored only the
+    status left the page dated for a lesson that never happened, and on the
+    flood day every one of those had to be patched by hand."""
+    scheduler, _calendar, docs = build()
+    scheduler.book(ADA, SESSION, date(2026, 8, 16), "17:00")
+    assert docs.get_status("doc-3").date == "2026-08-16"
+
+    result = scheduler.cancel(ADA, SESSION, date(2026, 8, 16), today=TODAY)
+
+    assert docs.get_status("doc-3").date == ""
+    assert result["cleared"] == ["date"]
+
+
+def test_cancel_dry_run_names_the_date_it_would_clear():
+    scheduler, _calendar, docs = build()
+    scheduler.book(ADA, SESSION, TODAY, "17:00")
+
+    result = scheduler.cancel(ADA, SESSION, TODAY, today=TODAY, dry_run=True)
+
+    assert result["would_clear"] == ["date"]
+    assert docs.get_status("doc-3").date == TODAY.isoformat()
+
+
 def test_cancelling_outside_the_window_is_blocked():
     """Rewriting last week's records is usually a mistake, not an intention."""
     scheduler, calendar, docs = build()
@@ -851,3 +875,145 @@ def test_who_is_booked_skips_a_deactivated_learner():
 
     assert [learner.name for learner in learners] == ["Ada Whitfield"]
     assert [entry["title"] for entry in unmatched] == ["Bruno Castell (lesson 9)"]
+
+
+# -- cancelling a whole day ----------------------------------------------------
+#
+# The flood day: seven lessons cancelled by hand, one command at a time. The
+# whole-day cancel has to be at least as careful as those seven were.
+
+
+FLOOD_DAY = date(2026, 8, 15)
+
+
+def _day(*titles_and_starts, docs=None):
+    events = [
+        CalendarEvent(id=f"ev-{index}", title=title, start=start, end=start)
+        for index, (title, start) in enumerate(titles_and_starts)
+    ]
+    calendar = FakeCalendar(events)
+    scheduler, store = _window(calendar, docs)
+    return scheduler, store, calendar
+
+
+def test_a_lost_day_cancels_every_booked_lesson_and_clears_their_dates():
+    docs = FakeDocStore(
+        statuses={
+            "doc-3": DocStatus(doc_id="doc-3", status="In progress", date="2026-08-15"),
+            "doc-9": DocStatus(doc_id="doc-9", status="In progress", date="2026-08-15"),
+        }
+    )
+    scheduler, store, calendar = _day(
+        ("Ada Whitfield (lesson 3)", "2026-08-15T17:00:00+07:00"),
+        ("Bruno Castell (lesson 9)", "2026-08-15T10:00:00+07:00"),
+        docs=docs,
+    )
+
+    result = scheduler.cancel_day(store, FLOOD_DAY, today=TODAY)
+
+    assert calendar.events == []
+    assert [item["learner"] for item in result["cancelled"]] == ["Bruno Castell", "Ada Whitfield"]
+    for doc_id in ("doc-3", "doc-9"):
+        assert docs.get_status(doc_id).status == "not_started"
+        assert docs.get_status(doc_id).date == ""
+    assert result["failed"] == []
+
+
+def test_a_lesson_already_done_keeps_its_event():
+    """The morning's lesson happened before the day went wrong."""
+    docs = FakeDocStore(
+        statuses={
+            "doc-3": DocStatus(doc_id="doc-3", status="Done", date="2026-08-15"),
+            "doc-9": DocStatus(doc_id="doc-9", status="In progress", date="2026-08-15"),
+        }
+    )
+    scheduler, store, calendar = _day(
+        ("Ada Whitfield (lesson 3)", "2026-08-15T09:00:00+07:00"),
+        ("Bruno Castell (lesson 9)", "2026-08-15T15:00:00+07:00"),
+        docs=docs,
+    )
+
+    result = scheduler.cancel_day(store, FLOOD_DAY, today=TODAY)
+
+    assert [event.title for event in calendar.events] == ["Ada Whitfield (lesson 3)"]
+    assert docs.get_status("doc-3").status == "Done"
+    assert [item["title"] for item in result["kept"]] == ["Ada Whitfield (lesson 3)"]
+
+
+def test_events_baton_did_not_write_are_listed_and_left_alone():
+    scheduler, store, calendar = _day(
+        ("Ada Whitfield (lesson 3)", "2026-08-15T17:00:00+07:00"),
+        ("🎸 Ada Whitfield · คาบประจำ", "2026-08-15T17:00:00+07:00"),
+        ("Dentist", "2026-08-15T12:00:00+07:00"),
+    )
+
+    result = scheduler.cancel_day(store, FLOOD_DAY, today=TODAY)
+
+    assert sorted(event.title for event in calendar.events) == [
+        "Dentist",
+        "🎸 Ada Whitfield · คาบประจำ",
+    ]
+    assert len(result["left_alone"]) == 2
+
+
+def test_an_unmatched_session_blocks_the_whole_day_before_anything_changes():
+    """Fail closed: stopping at the eighth lesson leaves a day neither on nor off."""
+    scheduler, store, calendar = _day(
+        ("Ada Whitfield (lesson 3)", "2026-08-15T17:00:00+07:00"),
+        ("Bruno Castell (lesson 77)", "2026-08-15T10:00:00+07:00"),
+    )
+
+    with pytest.raises(GateError) as excinfo:
+        scheduler.cancel_day(store, FLOOD_DAY, today=TODAY)
+
+    assert excinfo.value.exit_code == Exit.GATE
+    assert "lesson 77" in excinfo.value.missing[0]["reason"]
+    assert len(calendar.events) == 2
+
+
+def test_a_day_outside_the_window_is_refused():
+    scheduler, store, calendar = _day(
+        ("Ada Whitfield (lesson 3)", "2026-08-05T17:00:00+07:00"),
+    )
+
+    with pytest.raises(GateError):
+        scheduler.cancel_day(store, date(2026, 8, 5), today=TODAY, rollback_window_days=1)
+
+    assert len(calendar.events) == 1
+
+
+def test_a_whole_day_dry_run_changes_nothing():
+    scheduler, store, calendar = _day(
+        ("Ada Whitfield (lesson 3)", "2026-08-15T17:00:00+07:00"),
+    )
+
+    result = scheduler.cancel_day(store, FLOOD_DAY, today=TODAY, dry_run=True)
+
+    assert [item["learner"] for item in result["would_cancel"]] == ["Ada Whitfield"]
+    assert len(calendar.events) == 1
+
+
+def test_a_second_run_after_a_partial_failure_finishes_the_day():
+    """Past the gate, a failure is upstream. The re-run starts from what is left."""
+    scheduler, store, calendar = _day(
+        ("Ada Whitfield (lesson 3)", "2026-08-15T17:00:00+07:00"),
+        ("Bruno Castell (lesson 9)", "2026-08-15T10:00:00+07:00"),
+    )
+    real_delete = calendar.delete
+    calls = {"n": 0}
+
+    def flaky(event_id):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise UpstreamError("calendar hiccup", service="calendar")
+        return real_delete(event_id)
+
+    calendar.delete = flaky
+    first = scheduler.cancel_day(store, FLOOD_DAY, today=TODAY)
+    assert len(first["cancelled"]) == 1 and len(first["failed"]) == 1
+
+    calendar.delete = real_delete
+    second = scheduler.cancel_day(store, FLOOD_DAY, today=TODAY)
+
+    assert len(second["cancelled"]) == 1
+    assert calendar.events == []

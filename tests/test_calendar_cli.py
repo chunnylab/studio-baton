@@ -144,6 +144,25 @@ def test_the_relaxation_stops_at_booking(studio, capsys):
     assert out(capsys)["error"] == "needs_human"
 
 
+def test_cancel_day_clears_the_whole_day_end_to_end(studio, capsys):
+    """`today` rather than a fixed date: the rollback window is measured from
+    the real clock, so a hard-coded day would fall outside it next month."""
+    _, docs, calendar = studio
+    assert call(studio, "book", "Ada Whitfield", "today", "10:00", "--session", "3") == Exit.OK
+    assert call(studio, "book", "Bruno Castell", "today", "11:00") == Exit.OK
+    capsys.readouterr()
+
+    assert call(studio, "cancel-day", "today", "--dry-run") == Exit.OK
+    assert len(out(capsys)["would_cancel"]) == 2
+    assert len(calendar.events) == 2
+
+    assert call(studio, "cancel-day", "today") == Exit.OK
+    payload = out(capsys)
+    assert [item["learner"] for item in payload["cancelled"]] == ["Ada Whitfield", "Bruno Castell"]
+    assert calendar.events == []
+    assert docs.get_status("doc-ada-03").date == ""
+
+
 # -- schedule -----------------------------------------------------------------
 
 

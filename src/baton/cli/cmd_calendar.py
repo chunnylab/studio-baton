@@ -71,13 +71,30 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     cancel = group.add_parser(
         "cancel",
         help="Remove a booking and roll its session back.",
-        description="Deletes the event, then marks the session not started: in that order.",
+        description=(
+            "Deletes the event, then marks the session not started and clears "
+            "the date the booking wrote: in that order."
+        ),
     )
     cancel.add_argument("name", metavar="NAME")
     cancel.add_argument("date", metavar="DATE")
     cancel.add_argument("--session", type=int, default=None)
     cancel.add_argument("--dry-run", action="store_true")
     cancel.set_defaults(handler=handle_cancel)
+
+    cancel_day = group.add_parser(
+        "cancel-day",
+        help="Cancel every lesson booked on one day, for when the day is lost.",
+        description=(
+            "Checks every booked lesson first and changes nothing if one cannot "
+            "be matched to its session. Lessons already done keep their event. "
+            "Events Baton did not write, the standing weekly series included, "
+            "are listed and left alone."
+        ),
+    )
+    cancel_day.add_argument("date", metavar="DATE")
+    cancel_day.add_argument("--dry-run", action="store_true")
+    cancel_day.set_defaults(handler=handle_cancel_day)
 
     listing = group.add_parser(
         "list",
@@ -414,14 +431,53 @@ def handle_cancel(ctx: Context) -> Exit:
         )
 
     removed = result.get("deleted", result.get("would_delete", []))
+    cleared = result.get("cleared", result.get("would_clear", []))
     verb = "Would cancel" if ctx.args.dry_run else "Cancelled"
-    ctx.report.result(
-        {**result, "date": day.isoformat()},
-        human=f"{verb} {learner.name} {ctx.config.label('session')} "
-        f"{result['session_number']} on {day.isoformat()}\n"
+    lines = [
+        f"{verb} {learner.name} {ctx.config.label('session')} "
+        f"{result['session_number']} on {day.isoformat()}",
         f"  events removed: {len(removed)}",
-    )
+    ]
+    if cleared:
+        lines.append(f"  cleared: {', '.join(cleared)}")
+    ctx.report.result({**result, "date": day.isoformat()}, human="\n".join(lines))
     return Exit.OK
+
+
+@guarded("calendar")
+def handle_cancel_day(ctx: Context) -> Exit:
+    day = _date(ctx, ctx.args.date)
+    with store_scope(ctx.config) as store:
+        result = _scheduler(ctx).cancel_day(
+            store,
+            day,
+            rollback_window_days=int(ctx.config.get("calendar.rollback_window_days", 1)),
+            today=today_in(ctx.config.timezone),
+            dry_run=ctx.args.dry_run,
+        )
+
+    done = result.get("cancelled", result.get("would_cancel", []))
+    failed = result.get("failed", [])
+    verb = "Would cancel" if ctx.args.dry_run else "Cancelled"
+    lines = [f"{verb} {len(done)} lesson(s) on {day.isoformat()}"]
+    lines += [f"  ✓ {_clock_of(item['start'])}  {item['title']}" for item in done]
+    lines += [
+        f"  ✗ {_clock_of(item['start'])}  {item['title']}: {item['error']['message']}"
+        for item in failed
+    ]
+    lines += [
+        f"  = {_clock_of(item['start'])}  {item['title']} (kept: {item['reason']})"
+        for item in result["kept"]
+    ]
+    if result["left_alone"]:
+        lines.append("  Not Baton's, left alone (delete by hand if the day must be empty):")
+        lines += [
+            f"    {_clock_of(item['start'])}  {item['title']}" for item in result["left_alone"]
+        ]
+    if failed:
+        lines.append("  Re-run to finish: lessons already cancelled are not touched twice.")
+    ctx.report.result(result, human="\n".join(lines))
+    return Exit.UPSTREAM if failed else Exit.OK
 
 
 def _clock_of(start: str) -> str:

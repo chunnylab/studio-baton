@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from ...core.config import Config
 from ...core.retry import http_request
@@ -28,6 +28,37 @@ from .mapping import Schema
 
 def _text(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+_REST_PATH = "/rest/v1"
+
+
+def url_problem(driver: str, url: str) -> tuple[str, str] | None:
+    """What is wrong with pairing this URL with this driver, if anything.
+
+    Returns:
+        ``(detail, remedy)``, or ``None`` when the pair can work. A trailing
+        ``/rest/v1`` on a Supabase URL is not a problem: the supabase driver
+        strips it rather than sending ``/rest/v1/rest/v1``.
+    """
+    host = (urlsplit(url).hostname or "").lower()
+    if driver == "postgrest" and (host == "supabase.co" or host.endswith(".supabase.co")):
+        return (
+            f"{host} is a Supabase project, and the postgrest driver sends no "
+            "`apikey` header, so Supabase answers every request with 401.",
+            "Set `db.driver: supabase` and put the project URL and key in "
+            "SUPABASE_PROJECT_URL and SUPABASE_PROJECT_API. Give the URL without "
+            "/rest/v1: the supabase driver adds that path itself.",
+        )
+    return None
+
+
+def _supabase_base(url: str) -> str:
+    """The project URL with any ``/rest/v1`` a person already typed removed."""
+    base = url.rstrip("/")
+    if base.endswith(_REST_PATH):
+        base = base[: -len(_REST_PATH)].rstrip("/")
+    return base
 
 
 def _to_bool(value: Any) -> bool:
@@ -65,6 +96,9 @@ class PostgrestStore:
     @classmethod
     def from_config(cls, config: Config) -> PostgrestStore:
         url = config.secret("db.postgrest.url_env")
+        problem = url_problem("postgrest", str(url))
+        if problem is not None:
+            raise ConfigError(problem[0], remedy=problem[1])
         jwt = config.secret("db.postgrest.jwt_env", required=False)
         headers = {"Accept": "application/json"}
         if jwt:
@@ -77,7 +111,7 @@ class PostgrestStore:
 
     @classmethod
     def from_supabase_config(cls, config: Config) -> PostgrestStore:
-        url = str(config.secret("db.supabase.url_env")).rstrip("/")
+        url = _supabase_base(str(config.secret("db.supabase.url_env")))
         key = str(config.secret("db.supabase.key_env"))
         headers = {
             "Accept": "application/json",
@@ -85,7 +119,7 @@ class PostgrestStore:
             "Authorization": f"Bearer {key}",
         }
         return cls(
-            f"{url}/rest/v1",
+            f"{url}{_REST_PATH}",
             headers,
             Schema.from_config(config),
             driver_name="supabase",

@@ -222,6 +222,89 @@ def _probe(report: Report, label: str, run: Callable[[], None]) -> None:
         )
 
 
+#: Seconds between page reads. Notion averages three requests a second per
+#: integration, and a burst past it did not always fail loudly: on the flood
+#: day a scan of a hundred databases came back short with no error at all.
+PAGE_READ_PACING = 0.35
+
+
+def _check_pages(ctx: Context, report: Report, store: Any) -> None:
+    """Read each active learner's latest session page, the way work will.
+
+    A 404 and an outage need different fixes, so they are reported as two
+    checks: a page Notion cannot see is a sharing problem a person solves in
+    Notion, and saying "the service may be down" about it sends them to wait
+    for something that is not coming.
+    """
+    import time
+
+    docs = doc_adapters.open_docs(ctx.config)
+    unseen: list[str] = []
+    unanswered: list[str] = []
+    read = 0
+    for index, learner in enumerate(item for item in store.list_learners() if item.is_active):
+        with_page = [s for s in store.list_sessions(learner.id) if s.doc_id]
+        if not with_page:
+            continue
+        latest = max(with_page, key=lambda session: session.number)
+        if index:
+            time.sleep(PAGE_READ_PACING)
+        try:
+            docs.get_status(latest.doc_id, with_blocks=False)
+            read += 1
+        except BatonError as err:
+            if err.details.get("status_code") == 404:
+                unseen.append(learner.name)
+            else:
+                unanswered.append(learner.name)
+
+    total = read + len(unseen) + len(unanswered)
+    label = "Every active learner's latest session page can be read"
+    if not unseen and not unanswered:
+        report.add(label, passed=True, detail=f"{read} page(s)")
+        return
+    if unseen:
+        report.add(
+            label,
+            passed=False,
+            detail=f"{len(unseen)} of {total} not visible to the integration: {', '.join(unseen)}",
+            remedy="This is sharing, not an outage. Notion answers 404 for a page "
+            "the integration was never given. Share the page that holds these "
+            "learners' sessions (⋯ → Connections): sharing a parent covers "
+            "everything under it. If the page was deleted instead, fix the "
+            "session's doc id.",
+        )
+    if unanswered:
+        report.add(
+            "Notion answered every page read",
+            passed=False,
+            detail=f"{len(unanswered)} of {total} failed upstream: {', '.join(unanswered)}",
+            remedy="Rate limit or outage, not sharing: these pages were not "
+            "refused, they were not answered. Wait a minute and run doctor again.",
+        )
+
+
+def _check_db_url(ctx: Context, report: Report, driver: str) -> None:
+    """Catch a Supabase URL given to the postgrest driver before any request.
+
+    The two drivers differ in headers and path, and the wrong pairing fails
+    far from its cause: 401 for the missing ``apikey``, or a doubled
+    ``/rest/v1`` the gateway answers with an error that points elsewhere.
+    """
+    from ..adapters.db.postgrest import url_problem
+
+    env_name = ctx.config.get(f"db.{driver}.url_env", None)
+    url = os.environ.get(str(env_name), "") if env_name else ""
+    if not url:
+        return
+    problem = url_problem(driver, url)
+    label = "Database URL suits the selected driver"
+    if problem is None:
+        report.add(label, passed=True)
+    else:
+        report.add(label, passed=False, detail=problem[0], remedy=problem[1])
+
+
 def _check_reachable(ctx: Context, report: Report) -> None:
     """Open each store and prove it answers.
 
@@ -236,17 +319,23 @@ def _check_reachable(ctx: Context, report: Report) -> None:
         store = db_adapters.open_store(ctx.config)
         store.health()
 
+    before = len(report.failed)
     try:
         _probe(report, "Database is reachable and every table resolves", database)
+        _probe(
+            report,
+            "Document store accepts the credentials",
+            lambda: doc_adapters.open_docs(ctx.config).health(),
+        )
+        # A token that works proves nothing about the pages: on the day this
+        # check was written, doctor was green while a whole branch of session
+        # pages answered 404 because it had never been shared. Only worth
+        # asking once both stores answered at all.
+        if store is not None and len(report.failed) == before:
+            _check_pages(ctx, report, store)
     finally:
         if store is not None:
             store.close()
-
-    _probe(
-        report,
-        "Document store accepts the credentials",
-        lambda: doc_adapters.open_docs(ctx.config).health(),
-    )
 
     # Only when the credentials are actually there. A profile that has never
     # been pointed at a Google project is not broken, but one whose refresh
@@ -338,6 +427,7 @@ def handle(ctx: Context) -> Exit:
 
     _check_encoder(ctx, report, required=ctx.args.strict)
 
+    _check_db_url(ctx, report, db_driver)
     _check_schema(ctx, report)
     if not ctx.args.offline:
         _check_reachable(ctx, report)

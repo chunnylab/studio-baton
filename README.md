@@ -106,7 +106,13 @@ exits `2` while anything is unresolved. It checks the schema mapping too: a
 column named in `baton.yaml` that does not exist is caught here rather than at
 2am inside a pipeline, and it checks that the profile does not expect Baton to
 call a model, since a profile naming an `llm.provider` is waiting for a call
-that never comes. Add `--offline` to skip the checks that need a network.
+that never comes. Online, it reads each active learner's latest session page
+the way work will, because a token that works says nothing about the pages: a
+page Notion cannot see (404, almost always a page never shared with the
+integration) is reported apart from a page Notion did not answer (rate limit
+or outage), since the fixes differ. It also names a `*.supabase.co` URL given
+to the `postgrest` driver, which sends no `apikey` header and gets 401 from
+every request. Add `--offline` to skip the checks that need a network.
 
 Already have a database? Do **not** run the migration. Point `db.tables` and
 `db.fields` at your own names and let `baton doctor` confirm the mapping: see

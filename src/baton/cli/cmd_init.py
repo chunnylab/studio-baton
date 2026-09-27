@@ -39,11 +39,18 @@ CHAT_DRIVERS = ("line", "telegram", "webhook")
 _ENV_FOR = {
     "docs": [("NOTION_API_TOKEN", "Notion integration token, from notion.so/my-integrations")],
     "db:supabase": [
-        ("SUPABASE_PROJECT_URL", "Your Supabase project URL"),
+        (
+            "SUPABASE_PROJECT_URL",
+            "Your Supabase project URL, https://<ref>.supabase.co, without /rest/v1",
+        ),
         ("SUPABASE_PROJECT_API", "A service-role or anon key with access to the tables"),
     ],
     "db:postgrest": [
-        ("POSTGREST_URL", "Base URL of your PostgREST instance"),
+        (
+            "POSTGREST_URL",
+            "Base URL of your PostgREST instance. A *.supabase.co URL belongs "
+            "to --db supabase instead: this driver sends no apikey header",
+        ),
         ("POSTGREST_JWT", "JWT for a role that can read and write the tables"),
     ],
     "chat:line": [

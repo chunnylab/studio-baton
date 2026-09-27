@@ -88,8 +88,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         description=(
             "Checks every booked lesson first and changes nothing if one cannot "
             "be matched to its session. Lessons already done keep their event. "
-            "Events Baton did not write, the standing weekly series included, "
-            "are listed and left alone."
+            "Events Baton did not write and the standing weekly series that "
+            "fall on the day are listed and left alone."
         ),
     )
     cancel_day.add_argument("date", metavar="DATE")
@@ -474,6 +474,9 @@ def handle_cancel_day(ctx: Context) -> Exit:
         lines += [
             f"    {_clock_of(item['start'])}  {item['title']}" for item in result["left_alone"]
         ]
+    if result["standing"]:
+        lines.append("  Standing weekly series on this day, left alone (clear by hand):")
+        lines += [f"    {_clock_of(item['start'])}  {item['title']}" for item in result["standing"]]
     if failed:
         lines.append("  Re-run to finish: lessons already cancelled are not touched twice.")
     ctx.report.result(result, human="\n".join(lines))

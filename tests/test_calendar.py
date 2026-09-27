@@ -943,17 +943,56 @@ def test_a_lesson_already_done_keeps_its_event():
 def test_events_baton_did_not_write_are_listed_and_left_alone():
     scheduler, store, calendar = _day(
         ("Ada Whitfield (lesson 3)", "2026-08-15T17:00:00+07:00"),
-        ("🎸 Ada Whitfield · คาบประจำ", "2026-08-15T17:00:00+07:00"),
         ("Dentist", "2026-08-15T12:00:00+07:00"),
     )
 
     result = scheduler.cancel_day(store, FLOOD_DAY, today=TODAY)
 
-    assert sorted(event.title for event in calendar.events) == [
-        "Dentist",
-        "🎸 Ada Whitfield · คาบประจำ",
-    ]
-    assert len(result["left_alone"]) == 2
+    assert [event.title for event in calendar.events] == ["Dentist"]
+    assert [item["title"] for item in result["left_alone"]] == ["Dentist"]
+
+
+def test_the_standing_series_on_the_day_are_reported_not_touched():
+    """The real calendar keeps the weekly pattern out of `list_between`, so
+    1.10.0 reported nothing about it and a lost day looked empty when it was
+    not. A series counts when it began on or before the day, same weekday."""
+    from baton.adapters.cal.base import StandingSpec
+
+    scheduler, store, calendar = _day(("Ada Whitfield (lesson 3)", "2026-08-15T17:00:00+07:00"))
+    saturday = StandingSpec(
+        learner_id="1",
+        title="🎸 Ada Whitfield · คาบประจำ",
+        weekday="Saturday",
+        start="17:00",
+        end="18:00",
+        timezone="Asia/Bangkok",
+    )
+    calendar.create_standing(saturday, first_date="2026-08-01")
+    later = StandingSpec(
+        learner_id="2",
+        title="Bruno Castell · คาบประจำ",
+        weekday="Saturday",
+        start="10:00",
+        end="11:00",
+        timezone="Asia/Bangkok",
+    )
+    calendar.create_standing(later, first_date="2026-08-22")
+    sunday = StandingSpec(
+        learner_id="2",
+        title="Bruno Castell · คาบประจำ",
+        weekday="Sunday",
+        start="10:00",
+        end="11:00",
+        timezone="Asia/Bangkok",
+    )
+    calendar.create_standing(sunday, first_date="2026-08-02")
+
+    dry = scheduler.cancel_day(store, FLOOD_DAY, today=TODAY, dry_run=True)
+    result = scheduler.cancel_day(store, FLOOD_DAY, today=TODAY)
+
+    assert [item["title"] for item in dry["standing"]] == ["🎸 Ada Whitfield · คาบประจำ"]
+    assert [item["title"] for item in result["standing"]] == ["🎸 Ada Whitfield · คาบประจำ"]
+    assert len(calendar.list_standing()) == 3
 
 
 def test_an_unmatched_session_blocks_the_whole_day_before_anything_changes():

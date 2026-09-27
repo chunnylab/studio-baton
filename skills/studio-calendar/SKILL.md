@@ -50,8 +50,9 @@ usually a mistake.
 **A lost day goes through `calendar cancel-day`, never a loop of cancels.** Run
 it with `--dry-run` first and show the list. It checks every lesson before it
 touches any: exit 5 means nothing changed. Lessons already done keep their
-event. Events it did not write (the standing weekly series, anything a person
-typed) come back under `left_alone`; tell the user they are still there. Exit
+event. Events it did not write come back under `left_alone`, and the standing
+weekly series that fall on the day under `standing`. Both stay on the calendar:
+tell the user, because a day that must be empty still has them. Exit
 6 means some lessons were cancelled and some were not: re-run the same command,
 which only touches what is left.
 

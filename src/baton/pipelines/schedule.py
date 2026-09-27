@@ -355,9 +355,10 @@ class Scheduler:
         session cannot be found blocks the whole day, because cancelling
         seven lessons and stopping at the eighth leaves a day that is neither
         on nor off. A session already done is kept, with its event: the lesson
-        happened before the day went wrong. An event Baton did not write (a
-        standing weekly series, anything a person typed) is listed in
-        ``left_alone`` and never touched.
+        happened before the day went wrong. An event Baton did not write is
+        listed in ``left_alone``, and the standing weekly series that fall on
+        the day in ``standing``; neither is touched. The standing list is what
+        a person still has to clear by hand if the day must be empty.
 
         Raises:
             GateError: The day is outside the rollback window, or an event's
@@ -419,6 +420,16 @@ class Scheduler:
                 "start": event.start,
             }
 
+        # `list_between` answers bookings only, so the weekly pattern has to
+        # be asked for separately. A series falls on the day when it began
+        # on or before it, on the same weekday.
+        standing = [
+            {"title": series.title, "start": series.start}
+            for series in self.calendar.list_standing()
+            if series.start[:10] <= day.isoformat()
+            and date.fromisoformat(series.start[:10]).weekday() == day.weekday()
+        ]
+
         if dry_run:
             return {
                 "dry_run": True,
@@ -426,6 +437,7 @@ class Scheduler:
                 "would_cancel": [entry(*item) for item in planned],
                 "kept": kept,
                 "left_alone": left_alone,
+                "standing": standing,
             }
 
         cancelled: list[dict[str, Any]] = []
@@ -450,6 +462,7 @@ class Scheduler:
             "failed": failed,
             "kept": kept,
             "left_alone": left_alone,
+            "standing": standing,
         }
 
     def _check_window(self, day: date, rollback_window_days: int, today: date | None) -> None:

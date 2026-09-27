@@ -4,6 +4,20 @@ Notable changes per release. Anything that changes what a studio has to do is
 under **Upgrading**; the rest is grouped by what it affects. Every release back
 to 0.1.0 has an entry, and every tag carries a GitHub release.
 
+## 1.12.0 (2026-09-28)
+
+### Learners
+
+- **`baton learner lessons NAME [--session N]`.** Every lesson that
+  happened, with each done or in-progress page read once: its sections (the
+  ones `prep` reads) and its recording link, with the YouTube id when there is
+  one. The recording is picked by the same rules `send` uses, so the song
+  being learnt is never taken for the recording. `--session` reads one
+  session whatever its state. Built so the studio's app can show a whole
+  course and play last week's video in the app.
+- `find_video_link` has its choosing rules split out as `recording_in`, for
+  callers that already hold a page's blocks.
+
 ## 1.11.0 (2026-09-27)
 
 ### Calendar

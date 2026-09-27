@@ -135,7 +135,21 @@ def find_video_link(
         page = docs.list_blocks(doc_id)
     except BatonError:
         return ""
+    return recording_in(page, blocks=blocks, exclude=exclude)
 
+
+def recording_in(
+    page: list[Block],
+    *,
+    blocks: tuple[str, ...] = VIDEO_LINK_BLOCKS,
+    exclude: Iterable[str] = (),
+) -> str:
+    """The recording link among blocks already read; see :func:`find_video_link`.
+
+    Split out so a caller that reads a page for other reasons too (every
+    lesson of a course, section by section) picks the recording by the same
+    two rules without reading the page a second time.
+    """
     excluded = {video_identity(url) for url in exclude if url}
     candidates = [
         block

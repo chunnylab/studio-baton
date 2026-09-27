@@ -12,6 +12,7 @@ from .base import (
     PreservePolicy,
     PreserveRule,
     find_video_link,
+    recording_in,
 )
 from .notion import NotionDocStore
 
@@ -46,4 +47,5 @@ __all__ = [
     "PreserveRule",
     "find_video_link",
     "open_docs",
+    "recording_in",
 ]

@@ -706,3 +706,59 @@ def test_a_partial_that_only_matches_the_gone_is_named_in_the_remedy(studio, cap
     payload = json.loads(capsys.readouterr().out)
     assert payload["details"]["candidates"] == []
     assert "Clara Nguyen" in payload["remedy"]
+
+
+# -- lessons: every lesson, section by section, with its recording -------------
+
+
+def _lesson_page(overview: str, *extra: Block) -> list[Block]:
+    return [
+        Block(id="h1", type="heading_2", text="ภาพรวมการเรียน"),
+        Block(id="p1", type="paragraph", text=overview),
+        Block(id="h2", type="heading_2", text="การบ้าน"),
+        Block(id="p2", type="paragraph", text="ซ้อม G C D"),
+        *extra,
+    ]
+
+
+def test_lessons_reads_every_lesson_that_happened(studio, capsys):
+    """Done and in-progress sessions only: an unstarted page has nothing to recall."""
+    _, fake = studio
+    fake.blocks["doc-ada-01"] = _lesson_page(
+        "เริ่มคอร์ด",
+        Block(id="v", type="video", text="", url="https://youtu.be/AbCdEfGhIjK"),
+    )
+    fake.blocks["doc-ada-02"] = _lesson_page("คล่องขึ้น")
+
+    assert call(studio, "lessons", "Ada Whitfield") == Exit.OK
+
+    lessons = json.loads(capsys.readouterr().out)["lessons"]
+    assert [lesson["number"] for lesson in lessons] == [1, 2]
+    assert lessons[0]["sections"]["overview"] == "เริ่มคอร์ด"
+    assert lessons[0]["recording_id"] == "AbCdEfGhIjK"
+    assert lessons[1]["recording"] == ""
+
+
+def test_the_song_being_learnt_is_not_taken_for_the_recording(studio, capsys):
+    profile, fake = studio
+    connection = sqlite3.connect(profile / "data" / "studio.db")
+    connection.execute(
+        "UPDATE pieces SET source_link = 'https://www.youtube.com/watch?v=SongSongSon' WHERE id = 2"
+    )
+    connection.commit()
+    connection.close()
+    fake.blocks["doc-ada-02"] = _lesson_page(
+        "เพลงใหม่",
+        Block(id="b", type="bookmark", text="", url="https://youtu.be/SongSongSon"),
+    )
+
+    call(studio, "lessons", "Ada Whitfield")
+
+    lessons = json.loads(capsys.readouterr().out)["lessons"]
+    assert lessons[1]["recording"] == ""
+
+
+def test_lessons_can_read_one_session_whatever_its_state(studio, capsys):
+    assert call(studio, "lessons", "Ada Whitfield", "--session", "3") == Exit.OK
+    lessons = json.loads(capsys.readouterr().out)["lessons"]
+    assert [lesson["number"] for lesson in lessons] == [3]

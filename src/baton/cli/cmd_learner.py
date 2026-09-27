@@ -11,7 +11,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from ..adapters.db import store_scope
-from ..adapters.docs import VIDEO_LINK_BLOCKS, find_video_link, open_docs
+from ..adapters.docs import VIDEO_LINK_BLOCKS, find_video_link, open_docs, recording_in
 from ..adapters.docs.base import PreservePolicy
 from ..domain.localdate import DateFormat
 from ..domain.models import WEEKDAYS, Learner, Session, Work
@@ -78,6 +78,20 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     sessions = group.add_parser("sessions", help="Every session with its document status.")
     sessions.add_argument("name", metavar="NAME")
     sessions.set_defaults(handler=handle_sessions)
+
+    lessons = group.add_parser(
+        "lessons",
+        help="Every lesson that happened, read section by section, with its recording.",
+        description=(
+            "Reads each done or in-progress session page once: its sections "
+            "(the ones `prep` reads) and its recording link, picked by the same "
+            "rules `send` uses, so the song being learnt is never taken for the "
+            "recording. --session reads that one session whatever its state."
+        ),
+    )
+    lessons.add_argument("name", metavar="NAME")
+    lessons.add_argument("--session", type=int, default=None, metavar="N")
+    lessons.set_defaults(handler=handle_lessons)
 
     latest = group.add_parser(
         "latest",
@@ -628,6 +642,75 @@ def handle_sessions(ctx: Context) -> Exit:
         return Exit.OK
 
     lines = [f"{learner.name}"] + [_session_line(view, history.vocabulary, label) for view in views]
+    ctx.report.result(payload, human="\n".join(lines))
+    return Exit.OK
+
+
+def handle_lessons(ctx: Context) -> Exit:
+    from ..adapters.media.google import extract_video_id  # pure string parsing
+
+    rules = SectionRules.from_config(ctx.config)
+    allowed = tuple(
+        str(item) for item in ctx.config.get("docs.video_link_blocks", VIDEO_LINK_BLOCKS)
+    )
+    with store_scope(ctx.config) as store:
+        learner = _resolve(ctx, store, ctx.args.name)
+        history = _history(ctx, store)
+        views = history.sessions(learner)
+        # The piece's own link sits on the same page as the recording and is
+        # the same kind of YouTube URL; naming it keeps it from being taken
+        # for the lesson's recording.
+        exclude: list[str] = []
+        if learner.current_piece_id:
+            try:
+                piece = store.get_piece(learner.current_piece_id)
+            except BatonError:
+                piece = None
+            if piece and piece.source_link:
+                exclude.append(piece.source_link)
+
+    wanted = [
+        view
+        for view in views
+        if view.session.doc_id
+        and (
+            view.number == ctx.args.session
+            if ctx.args.session is not None
+            else view.state in ("done", "in_progress")
+        )
+    ]
+    lessons: list[dict[str, Any]] = []
+    for view in wanted:
+        entry: dict[str, Any] = {
+            "number": view.number,
+            "state": view.state,
+            "status": view.doc.status,
+            "date": view.doc.date,
+            "titles": view.doc.titles,
+            "sections": {},
+            "recording": "",
+            "recording_id": "",
+            "unreadable": view.unreadable,
+        }
+        try:
+            blocks = history.docs.list_blocks(view.session.doc_id)
+        except BatonError as exc:
+            entry["unreadable"] = exc.message
+        else:
+            entry["sections"] = rules.read(blocks)
+            link = recording_in(blocks, blocks=allowed, exclude=exclude)
+            entry["recording"] = link
+            entry["recording_id"] = extract_video_id(link) or ""
+        lessons.append(entry)
+
+    label = ctx.config.label("session")
+    payload = {"learner": learner.to_dict(), "lessons": lessons}
+    lines = [learner.name] + [
+        f"  {label} {item['number']:>2}  {item['state'] or '?':<11} {item['date'] or '-':<10}"
+        f"  {'video' if item['recording'] else '     '}  {item['titles'] or ''}"
+        + (f"  (unreadable: {item['unreadable']})" if item["unreadable"] else "")
+        for item in lessons
+    ]
     ctx.report.result(payload, human="\n".join(lines))
     return Exit.OK
 

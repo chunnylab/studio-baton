@@ -554,6 +554,31 @@ class NotionDocStore:
             self._request("PATCH", f"/pages/{doc_id}", {"properties": payload})
         return sorted(payload)
 
+    def clear_properties(self, doc_id: str, keys: list[str]) -> list[str]:
+        """Empty the configured properties named by ``keys``, and nothing else."""
+        if not keys:
+            return []
+        page = self._request("GET", f"/pages/{doc_id}")
+        properties = page.get("properties", {}) or {}
+
+        payload: dict[str, Any] = {}
+        cleared: list[str] = []
+        for key in keys:
+            name = self._property_name(key)
+            prop = properties.get(name)
+            if not isinstance(prop, dict):
+                continue
+            kind = str(prop.get("type", ""))
+            empty = _EMPTY_PROPERTY.get(kind)
+            if kind in _READ_ONLY_PROPERTIES or kind == "title" or empty is None:
+                continue
+            payload[name] = {kind: empty()}
+            cleared.append(key)
+
+        if payload:
+            self._request("PATCH", f"/pages/{doc_id}", {"properties": payload})
+        return cleared
+
     def restore(self, doc_id: str) -> bool:
         """Bring a page back from the trash, if that is where it is."""
         page = self._request("GET", f"/pages/{doc_id}")

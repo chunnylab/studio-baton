@@ -258,6 +258,53 @@ def test_a_status_read_can_decline_to_count_the_blocks(monkeypatch):
     assert full.block_count == 0
 
 
+def test_clearing_empties_only_the_named_properties(monkeypatch):
+    """A cancel undoes one booking. It must send the date's own empty shape
+    and leave every other column on the page exactly as a person left it."""
+    import baton.adapters.docs.notion as notion_module
+
+    store = NotionDocStore(
+        token="t", properties={"date": "Date", "status": "Status", "titles": "Titles"}
+    )
+    patches: list[dict] = []
+
+    def record(method, _url, **kwargs):
+        if method == "PATCH":
+            patches.append(kwargs.get("json") or {})
+            return _Reply(200, {})
+        return _Reply(
+            200,
+            {
+                "properties": {
+                    "Date": {"type": "date", "date": {"start": "2026-09-26"}},
+                    "Status": {"type": "status", "status": {"name": "In progress"}},
+                    "Titles": {"type": "rich_text", "rich_text": [{"plain_text": "Blues"}]},
+                }
+            },
+        )
+
+    monkeypatch.setattr(notion_module, "http_request", record)
+
+    assert store.clear_properties("abc123", ["date"]) == ["date"]
+    assert patches == [{"properties": {"Date": {"date": None}}}]
+
+
+def test_clearing_a_column_the_page_lacks_sends_nothing(monkeypatch):
+    import baton.adapters.docs.notion as notion_module
+
+    store = NotionDocStore(token="t", properties={"date": "Date"})
+    methods: list[str] = []
+
+    def record(method, _url, **_kwargs):
+        methods.append(method)
+        return _Reply(200, {"properties": {}})
+
+    monkeypatch.setattr(notion_module, "http_request", record)
+
+    assert store.clear_properties("abc123", ["date"]) == []
+    assert methods == ["GET"]
+
+
 # -- where new blocks land ---------------------------------------------------
 #
 # A store cannot move a block that already exists: Notion has no such

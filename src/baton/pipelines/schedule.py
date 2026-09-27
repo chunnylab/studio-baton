@@ -35,6 +35,9 @@ from ..domain.whenever import combine, parse_time, today_in
 from ..errors import BatonError, GateError, StateError, UsageError
 from .learner import SessionView
 
+#: Properties a booking writes besides the status, which a cancel empties.
+_BOOKED_PROPERTIES = ("date",)
+
 
 @dataclass
 class BookingResult:
@@ -280,23 +283,7 @@ class Scheduler:
                 session is already done. Both are cases where rewriting history
                 is more likely a mistake than an intention.
         """
-        reference = today or datetime.now().date()
-        distance = abs((day - reference).days)
-        if distance > rollback_window_days:
-            raise GateError(
-                f"That {self.session_label} is {distance} days from today, "
-                f"beyond the {rollback_window_days}-day cancel window.",
-                missing=[
-                    {
-                        "field": "date",
-                        "reason": f"{day.isoformat()} is outside the window",
-                        "how_to_fix": "Cancel on the day, or widen "
-                        "calendar.rollback_window_days if your studio works that way.",
-                    }
-                ],
-                remedy="Nothing was changed. Rewriting a past week's records is "
-                "usually a mistake rather than an intention.",
-            )
+        self._check_window(day, rollback_window_days, today)
 
         # A session with no document has no status to consult; cancelling it
         # is just removing the event. Reading `get_status("")` instead would
@@ -328,6 +315,7 @@ class Scheduler:
                 "session_number": session.number,
                 "would_delete": [event.to_dict() for event in events],
                 "would_set_status": NOT_STARTED,
+                "would_clear": list(_BOOKED_PROPERTIES) if session.doc_id else [],
             }
 
         # Event first: a rolled-back document with the lesson still on the
@@ -335,15 +323,154 @@ class Scheduler:
         for event in events:
             self.calendar.delete(event.id)
 
+        cleared: list[str] = []
         if session.doc_id:
             self.docs.set_status(session.doc_id, NOT_STARTED)
+            # Booking writes the status and the date together, so undoing it
+            # empties both. A page left saying "not started" on a date that
+            # never happened reads as a lesson that was skipped, and the next
+            # booking's date would be the only thing correcting it.
+            cleared = self.docs.clear_properties(session.doc_id, list(_BOOKED_PROPERTIES))
 
         return {
             "learner": learner.name,
             "session_number": session.number,
             "deleted": [event.to_dict() for event in events],
             "status": NOT_STARTED,
+            "cleared": cleared,
         }
+
+    def cancel_day(
+        self,
+        store: LearnerStore,
+        day: date,
+        *,
+        rollback_window_days: int = 1,
+        today: date | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Cancel every lesson Baton booked on ``day``, for when the day is lost.
+
+        Everything is checked before anything is touched. An event whose
+        session cannot be found blocks the whole day, because cancelling
+        seven lessons and stopping at the eighth leaves a day that is neither
+        on nor off. A session already done is kept, with its event: the lesson
+        happened before the day went wrong. An event Baton did not write (a
+        standing weekly series, anything a person typed) is listed in
+        ``left_alone`` and never touched.
+
+        Raises:
+            GateError: The day is outside the rollback window, or an event's
+                session could not be found. Nothing was changed.
+        """
+        self._check_window(day, rollback_window_days, today)
+
+        start = combine(day, parse_time("00:00"), self.timezone).isoformat()
+        end = combine(day + timedelta(days=1), parse_time("00:00"), self.timezone).isoformat()
+        events = sorted(self.calendar.list_between(start, end), key=lambda event: event.start)
+        by_name = {item.name: item for item in store.list_learners() if item.is_active}
+
+        planned: list[tuple[CalendarEvent, Learner, Session]] = []
+        kept: list[dict[str, Any]] = []
+        left_alone: list[dict[str, Any]] = []
+        missing: list[dict[str, Any]] = []
+        for event in events:
+            match = self._match_event(event.title, by_name)
+            if match is None:
+                left_alone.append({"title": event.title, "start": event.start})
+                continue
+            learner, number = match
+            session = store.get_session(learner.id, number)
+            if session is None:
+                missing.append(
+                    {
+                        "field": "session",
+                        "reason": f"{event.title} names {self.session_label} {number}, "
+                        f"which {learner.name} does not have",
+                        "how_to_fix": "Delete that event by hand, or fix the "
+                        "session number, then re-run.",
+                    }
+                )
+                continue
+            status = ""
+            if session.doc_id:
+                status = self.vocabulary.canonical(
+                    self.docs.get_status(session.doc_id, with_blocks=False).status
+                )
+            if status == DONE:
+                kept.append({"title": event.title, "start": event.start, "reason": "already done"})
+                continue
+            planned.append((event, learner, session))
+
+        if missing:
+            raise GateError(
+                f"{len(missing)} of the day's events could not be matched to a "
+                f"{self.session_label}, so none of the day was cancelled.",
+                missing=missing,
+                remedy="Nothing was changed. Resolve the listed events, then "
+                "re-run: a half-cancelled day is harder to repair than either.",
+            )
+
+        def entry(event: CalendarEvent, learner: Learner, session: Session) -> dict[str, Any]:
+            return {
+                "learner": learner.name,
+                "session_number": session.number,
+                "title": event.title,
+                "start": event.start,
+            }
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "date": day.isoformat(),
+                "would_cancel": [entry(*item) for item in planned],
+                "kept": kept,
+                "left_alone": left_alone,
+            }
+
+        cancelled: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        for event, learner, session in planned:
+            # Past the gate every failure is an upstream one, and a re-run
+            # starts from what is left: a cancelled lesson has no event to
+            # match any more, so it is not cancelled twice.
+            try:
+                self.calendar.delete(event.id)
+                cleared: list[str] = []
+                if session.doc_id:
+                    self.docs.set_status(session.doc_id, NOT_STARTED)
+                    cleared = self.docs.clear_properties(session.doc_id, list(_BOOKED_PROPERTIES))
+                cancelled.append({**entry(event, learner, session), "cleared": cleared})
+            except BatonError as err:
+                failed.append({**entry(event, learner, session), "error": err.to_dict()})
+
+        return {
+            "date": day.isoformat(),
+            "cancelled": cancelled,
+            "failed": failed,
+            "kept": kept,
+            "left_alone": left_alone,
+        }
+
+    def _check_window(self, day: date, rollback_window_days: int, today: date | None) -> None:
+        """Refuse a cancel that reaches further from today than the window allows."""
+        reference = today or datetime.now().date()
+        distance = abs((day - reference).days)
+        if distance > rollback_window_days:
+            raise GateError(
+                f"That {self.session_label} is {distance} days from today, "
+                f"beyond the {rollback_window_days}-day cancel window.",
+                missing=[
+                    {
+                        "field": "date",
+                        "reason": f"{day.isoformat()} is outside the window",
+                        "how_to_fix": "Cancel on the day, or widen "
+                        "calendar.rollback_window_days if your studio works that way.",
+                    }
+                ],
+                remedy="Nothing was changed. Rewriting a past week's records is "
+                "usually a mistake rather than an intention.",
+            )
 
     # -- who is mid-session -------------------------------------------------
 

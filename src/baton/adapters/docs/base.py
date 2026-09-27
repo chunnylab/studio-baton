@@ -311,6 +311,19 @@ class DocStore(Protocol):
         """Clear every writable property except the title. Returns their names."""
         ...
 
+    def clear_properties(self, doc_id: str, keys: list[str]) -> list[str]:
+        """Empty only the named properties, by their ``docs.properties`` key.
+
+        The narrow counterpart to :meth:`reset_properties`, for undoing one
+        write exactly: a cancel empties the date a booking set and leaves
+        everything a person typed on the page alone. A key the page has no
+        column for is skipped, as :meth:`set_properties` skips it.
+
+        Returns:
+            The keys actually cleared.
+        """
+        ...
+
     def restore(self, doc_id: str) -> bool:
         """Bring a page back from the trash. True when it is usable afterwards."""
         ...

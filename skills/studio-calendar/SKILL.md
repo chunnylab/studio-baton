@@ -22,6 +22,8 @@ baton calendar list <date> --json
 baton calendar list --from <date> --to <date> --json
 baton calendar book "<name>" <date> <start> [end] --json
 baton calendar cancel "<name>" <date> --json
+baton calendar cancel-day <date> --dry-run --json   # a lost day: preview first
+baton calendar cancel-day <date> --json
 
 baton calendar schedule <date> --text "17:00 Ada Whitfield
 18:00 -
@@ -44,6 +46,14 @@ slot before it.
 **Exit 5 on a cancel means it is outside the window, or already done.** Do not
 widen the window and retry. Report it: rewriting a past week's records is
 usually a mistake.
+
+**A lost day goes through `calendar cancel-day`, never a loop of cancels.** Run
+it with `--dry-run` first and show the list. It checks every lesson before it
+touches any: exit 5 means nothing changed. Lessons already done keep their
+event. Events it did not write (the standing weekly series, anything a person
+typed) come back under `left_alone`; tell the user they are still there. Exit
+6 means some lessons were cancelled and some were not: re-run the same command,
+which only touches what is left.
 
 **If booking fails, nothing was booked.** The document is updated first, so a
 failure there leaves the calendar untouched. Report and stop; do not create the

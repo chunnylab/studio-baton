@@ -366,6 +366,23 @@ class FakeDocStore:
             self.statuses[doc_id] = DocStatus(doc_id=doc_id, url=current.url)
         return ["date", "status", "titles"]
 
+    def clear_properties(self, doc_id: str, keys: list[str]) -> list[str]:
+        self._check()
+        if self.fail_on_properties:
+            from ..errors import UpstreamError
+
+            raise UpstreamError("notion rejected the property write", service="notion")
+        current = self.get_status(doc_id)
+        cleared = sorted(key for key in keys if key in ("status", "date", "titles"))
+        self.statuses[doc_id] = DocStatus(
+            doc_id=doc_id,
+            status="" if "status" in cleared else current.status,
+            date="" if "date" in cleared else current.date,
+            titles="" if "titles" in cleared else current.titles,
+            url=current.url,
+        )
+        return cleared
+
     def restore(self, doc_id: str) -> bool:
         self._check()
         self.trashed.discard(doc_id)

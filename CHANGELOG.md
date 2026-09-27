@@ -4,6 +4,17 @@ Notable changes per release. Anything that changes what a studio has to do is
 under **Upgrading**; the rest is grouped by what it affects. Every release back
 to 0.1.0 has an entry, and every tag carries a GitHub release.
 
+## 1.11.0 (2026-09-27)
+
+### Calendar
+
+- **`calendar cancel-day` reports the standing weekly series that fall on the
+  day** under a new `standing` key, and leaves them in place. 1.10.0 claimed
+  it listed them under `left_alone`, but the Google adapter keeps the weekly
+  pattern out of booking queries, so on a real calendar they never appeared
+  and a lost day looked empty when it was not. A series counts when it began
+  on or before the day, on the same weekday.
+
 ## 1.10.0 (2026-09-27)
 
 Four fixes from the afternoon spent rebuilding the studio on a new machine

@@ -4,6 +4,59 @@ Notable changes per release. Anything that changes what a studio has to do is
 under **Upgrading**; the rest is grouped by what it affects. Every release back
 to 0.1.0 has an entry, and every tag carries a GitHub release.
 
+## 1.10.0 (2026-09-27)
+
+Four fixes from the afternoon spent rebuilding the studio on a new machine
+after a flood, each one a place where that day lost time, and a named
+approver for video waivers.
+
+### Calendar
+
+- **`calendar cancel` clears the date the booking wrote.** Booking sets the
+  session's status and date together; cancelling restored only the status and
+  left the page dated for a lesson that never happened. Both are undone now,
+  and the payload lists what was cleared under `cleared` (`would_clear` on a
+  dry run). New `DocStore.clear_properties` empties named properties only.
+- **`calendar cancel-day DATE`.** Cancels every lesson Baton booked on one
+  day. Every event is matched to its session before anything changes, and an
+  unmatched one blocks the whole day (exit 5). Sessions already done keep
+  their event. Events Baton did not write, the standing weekly series
+  included, are listed under `left_alone` and not touched. A failure past the
+  gate exits 6 and a re-run finishes what is left.
+
+### Doctor
+
+- **Reads each active learner's latest session page.** A valid token no
+  longer turns the check green on its own. A 404 is reported as sharing, with
+  the Connections fix; a page Notion did not answer is reported separately as
+  rate limit or outage. Reads are paced for Notion's request rate.
+- **Names a Supabase URL on the `postgrest` driver** before any request, and
+  the `postgrest` driver refuses one at construction with the same remedy,
+  instead of failing with 401.
+
+### Database
+
+- **The `supabase` driver strips a trailing `/rest/v1`** from the project URL
+  instead of requesting `/rest/v1/rest/v1`.
+- `baton init` writes the same two warnings into `.env.example`.
+
+### Sending
+
+- **Video-waiver codes go to the studio's named approver.** The new
+  `summary.video_waiver.recipient` names that approver once, in the profile.
+  `send video-waiver --to` is now optional, and exits 2 when neither the
+  flag nor the setting is given. The exit-3 remedy for a lesson with no
+  recording names the configured approver. Before, it echoed the lesson's
+  own recipient, so an agent following it sent the code to the teacher
+  instead of the owner.
+
+### Upgrading
+
+- Nothing is required. To send waiver codes without `--to`, set
+  `summary.video_waiver.recipient`.
+- A profile on the `postgrest` driver with a `*.supabase.co` URL now stops at
+  exit 2 with the fix. It could not have worked before either: it got 401.
+
 ## 1.9.0 (2026-09-22)
 
 Recording sessions no longer need a teaching summary invented for them. A

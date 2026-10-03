@@ -4,7 +4,7 @@ Notable changes per release. Anything that changes what a studio has to do is
 under **Upgrading**; the rest is grouped by what it affects. Every release back
 to 0.1.0 has an entry, and every tag carries a GitHub release.
 
-## Unreleased
+## 1.13.0 (2026-10-03)
 
 ### Calendar
 

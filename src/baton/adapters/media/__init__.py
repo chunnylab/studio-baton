@@ -5,6 +5,7 @@ from __future__ import annotations
 from ...core.config import Config
 from ...errors import ConfigError
 from .base import (
+    CombineResult,
     EncodeProfile,
     MediaSource,
     SourceClip,

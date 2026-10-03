@@ -19,7 +19,7 @@ from ..adapters.docs import open_docs
 from ..domain.models import Learner
 from ..domain.resolve import resolve_learner_loose
 from ..domain.status import StatusVocabulary
-from ..domain.whenever import day_window, parse_date, parse_schedule, parse_time, today_in
+from ..domain.whenever import day_window, parse_date, parse_schedule, today_in
 from ..errors import BatonError, UsageError
 from ..exits import Exit
 from ..pipelines.learner import LearnerHistory
@@ -190,10 +190,6 @@ def _time_words(ctx: Context):
     """The profile's time vocabulary, or ``None`` when it has none."""
     words = ctx.config.section("calendar.time_words")
     return words or None
-
-
-def _time(ctx: Context, value: str):
-    return parse_time(value, words=_time_words(ctx))
 
 
 def _scheduler(ctx: Context) -> Scheduler:

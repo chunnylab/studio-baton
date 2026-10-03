@@ -20,8 +20,6 @@ IN_PROGRESS = "in_progress"
 NOT_STARTED = "not_started"
 UNKNOWN = ""
 
-CANONICAL = (NOT_STARTED, IN_PROGRESS, DONE)
-
 
 def _fold(value: str) -> str:
     return " ".join(str(value).strip().casefold().split())
@@ -63,12 +61,3 @@ class StatusVocabulary:
         produces readable output instead of an empty string.
         """
         return self.wording.get(canonical_key, canonical_key)
-
-    def is_done(self, raw: str) -> bool:
-        return self.canonical(raw) == DONE
-
-    def is_in_progress(self, raw: str) -> bool:
-        return self.canonical(raw) == IN_PROGRESS
-
-    def is_not_started(self, raw: str) -> bool:
-        return self.canonical(raw) == NOT_STARTED

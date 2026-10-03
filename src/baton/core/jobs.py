@@ -563,7 +563,6 @@ class RunLock:
 
     path: Path
     _handle: Any = field(default=None, init=False, repr=False)
-    _owned: bool = field(default=False, init=False, repr=False)
 
     def acquire(self) -> None:
         """Take the lock or raise :class:`BusyError`.
@@ -593,7 +592,6 @@ class RunLock:
                 details={"lock": str(self.path), "holder_pid": holder},
             ) from None
         self._handle = handle
-        self._owned = True
         with suppress(OSError):
             handle.seek(0)
             handle.truncate()
@@ -610,7 +608,6 @@ class RunLock:
                     fcntl.flock(self._handle, fcntl.LOCK_UN)
             self._handle.close()
         self._handle = None
-        self._owned = False
 
     def __enter__(self) -> RunLock:
         self.acquire()

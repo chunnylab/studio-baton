@@ -28,16 +28,14 @@ class Reporter:
 
     json_mode: bool = False
     quiet: bool = False
-    stream: TextIO | None = None
-    err_stream: TextIO | None = None
 
     @property
     def _out(self) -> TextIO:
-        return self.stream if self.stream is not None else sys.stdout
+        return sys.stdout
 
     @property
     def _err(self) -> TextIO:
-        return self.err_stream if self.err_stream is not None else sys.stderr
+        return sys.stderr
 
     # -- progress (stderr, never part of the JSON document) ----------------
 

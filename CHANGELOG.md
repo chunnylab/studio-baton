@@ -6,6 +6,14 @@ to 0.1.0 has an entry, and every tag carries a GitHub release.
 
 ## Unreleased
 
+### Calendar
+
+- **A lesson still ahead can be cancelled.** `calendar.rollback_window_days`
+  now limits only how far into the past `calendar cancel` and `cancel-day`
+  reach. It used to measure both ways, so a booking more than a day out
+  (next week's lesson a family asked to drop) was refused with exit 5. A
+  past week is guarded exactly as before.
+
 ### Sending
 
 - **`send lesson --dry-run` says when the real send would be refused.** The

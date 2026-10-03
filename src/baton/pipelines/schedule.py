@@ -275,13 +275,14 @@ class Scheduler:
         """Remove the booking and roll the session back to not started.
 
         Args:
-            rollback_window_days: How far ahead or behind ``today`` a cancel is
-                allowed to reach.
+            rollback_window_days: How far into the past a cancel may reach.
+                A lesson still ahead can always be cancelled: it has no
+                history to rewrite.
 
         Raises:
-            GateError: The lesson is outside the rollback window, or the
-                session is already done. Both are cases where rewriting history
-                is more likely a mistake than an intention.
+            GateError: The lesson is further in the past than the rollback
+                window, or the session is already done. Both are cases where
+                rewriting history is more likely a mistake than an intention.
         """
         self._check_window(day, rollback_window_days, today)
 
@@ -465,9 +466,15 @@ class Scheduler:
         }
 
     def _check_window(self, day: date, rollback_window_days: int, today: date | None) -> None:
-        """Refuse a cancel that reaches further from today than the window allows."""
+        """Refuse a cancel that reaches further into the past than the window allows.
+
+        Only the past is gated. A booking next week is the ordinary thing a
+        studio cancels when a family asks; the session it rolls back has not
+        happened, so nothing recorded about it changes. The window used to be
+        measured in both directions, which refused those too.
+        """
         reference = today or datetime.now().date()
-        distance = abs((day - reference).days)
+        distance = (reference - day).days
         if distance > rollback_window_days:
             raise GateError(
                 f"That {self.session_label} is {distance} days from today, "

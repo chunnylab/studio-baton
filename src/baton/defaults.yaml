@@ -442,8 +442,9 @@ calendar:
   # type dates the Thai way and the agent should not have to rewrite them.
   accept_dmy: false
 
-  # How far from today a cancel may reach. Rewriting a past week's records is
-  # usually a mistake rather than an intention, so it is refused past this.
+  # How far into the past a cancel may reach. Rewriting a past week's records
+  # is usually a mistake rather than an intention, so it is refused past this.
+  # A lesson still ahead can always be cancelled.
   rollback_window_days: 1
   # Emoji prefixed to a lesson event, chosen by the learner's instrument.
   # The key is matched case-insensitively against the instrument field.

@@ -461,6 +461,17 @@ def test_cancelling_outside_the_window_is_blocked():
     assert docs.get_status("doc-3").status == "in_progress"
 
 
+def test_a_lesson_weeks_ahead_can_be_cancelled():
+    """The window guards the past; a booking next month has no history yet."""
+    scheduler, calendar, docs = build()
+    scheduler.book(ADA, SESSION, date(2026, 9, 13), "17:00")
+
+    result = scheduler.cancel(ADA, SESSION, date(2026, 9, 13), today=TODAY, rollback_window_days=1)
+
+    assert result["status"] == "not_started"
+    assert len(calendar.events) == 0
+
+
 def test_the_window_is_configurable():
     scheduler, _calendar, _docs = build()
 
@@ -1008,6 +1019,17 @@ def test_an_unmatched_session_blocks_the_whole_day_before_anything_changes():
     assert excinfo.value.exit_code == Exit.GATE
     assert "lesson 77" in excinfo.value.missing[0]["reason"]
     assert len(calendar.events) == 2
+
+
+def test_a_day_weeks_ahead_can_be_cancelled():
+    scheduler, store, calendar = _day(
+        ("Ada Whitfield (lesson 3)", "2026-09-13T17:00:00+07:00"),
+    )
+
+    result = scheduler.cancel_day(store, date(2026, 9, 13), today=TODAY, rollback_window_days=1)
+
+    assert len(result["cancelled"]) == 1
+    assert len(calendar.events) == 0
 
 
 def test_a_day_outside_the_window_is_refused():

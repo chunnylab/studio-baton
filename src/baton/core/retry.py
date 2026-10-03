@@ -12,8 +12,7 @@ from __future__ import annotations
 import random
 import re
 import time
-from collections.abc import Callable, Sequence
-from contextlib import suppress
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 import requests
@@ -54,20 +53,14 @@ def retry(
     fn: Callable[[], T],
     *,
     attempts: int = 3,
-    base_delay: float = 2.0,
-    max_delay: float = 30.0,
     exceptions: tuple[type[BaseException], ...] = (Exception,),
-    on_retry: Callable[[BaseException, int, float], None] | None = None,
 ) -> T:
     """Call ``fn`` until it succeeds or ``attempts`` is exhausted.
 
     Args:
         fn: Zero-argument callable to run.
         attempts: Total tries, including the first.
-        base_delay: Base for the exponential backoff.
-        max_delay: Ceiling applied before jitter.
         exceptions: Exception types treated as transient.
-        on_retry: Notified as ``(exc, attempt_number, delay)`` before sleeping.
 
     Returns:
         Whatever ``fn`` returned on its first success.
@@ -78,15 +71,10 @@ def retry(
     for attempt in range(attempts):
         try:
             return fn()
-        except exceptions as exc:
+        except exceptions:
             if attempt + 1 >= attempts:
                 raise
-            delay = backoff_delay(attempt, base=base_delay, cap=max_delay)
-            if on_retry:
-                # A broken callback must not mask the retry it was reporting on.
-                with suppress(Exception):
-                    on_retry(exc, attempt + 1, delay)
-            time.sleep(delay)
+            time.sleep(backoff_delay(attempt))
     raise AssertionError("unreachable: retry loop exited without returning or raising")
 
 
@@ -97,10 +85,6 @@ def http_request(
     service: str = "upstream",
     timeout: float = 30.0,
     attempts: int = 3,
-    base_delay: float = 2.0,
-    max_delay: float = 30.0,
-    retry_on_status: Sequence[int] = RETRYABLE_STATUS,
-    on_retry: Callable[[Any, int, float], None] | None = None,
     **kwargs: Any,
 ) -> requests.Response:
     """``requests.request`` with a mandatory timeout and transient-fault retries.
@@ -112,8 +96,8 @@ def http_request(
             tell Notion from YouTube at a glance.
         timeout: Per-attempt timeout. Always applied: an un-timed request is
             how a nightly job hangs until someone notices the next morning.
-        attempts: Total tries, including the first.
-        retry_on_status: Statuses that trigger another attempt.
+        attempts: Total tries, including the first. Statuses in
+            :data:`RETRYABLE_STATUS` trigger another attempt.
         **kwargs: Forwarded to ``requests.request``.
 
     Returns:
@@ -130,23 +114,15 @@ def http_request(
         try:
             # A timeout is always present: kwargs.setdefault above guarantees it.
             response = requests.request(method, url, **kwargs)  # noqa: S113
-            if response.status_code in retry_on_status and attempt + 1 < attempts:
-                delay = backoff_delay(attempt, base=base_delay, cap=max_delay)
-                if on_retry:
-                    with suppress(Exception):
-                        on_retry(response, attempt + 1, delay)
-                time.sleep(delay)
+            if response.status_code in RETRYABLE_STATUS and attempt + 1 < attempts:
+                time.sleep(backoff_delay(attempt))
                 continue
             return response
         except transient as exc:
             last_exc = exc
             if attempt + 1 >= attempts:
                 break
-            delay = backoff_delay(attempt, base=base_delay, cap=max_delay)
-            if on_retry:
-                with suppress(Exception):
-                    on_retry(exc, attempt + 1, delay)
-            time.sleep(delay)
+            time.sleep(backoff_delay(attempt))
 
     raise UpstreamError(
         redact(f"{service} did not respond after {attempts} attempts: {last_exc}"),

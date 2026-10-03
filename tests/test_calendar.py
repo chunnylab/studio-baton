@@ -470,6 +470,7 @@ def test_a_lesson_weeks_ahead_can_be_cancelled():
 
     assert result["status"] == "not_started"
     assert len(calendar.events) == 0
+    assert docs.get_status("doc-3").status == "not_started"
 
 
 def test_the_window_is_configurable():

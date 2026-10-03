@@ -37,7 +37,7 @@ from ..adapters.media import open_publisher
 from ..adapters.media.google import extract_video_id
 from ..domain.footer import Footer
 from ..domain.models import Learner
-from ..domain.resolve import normalise, resolve_learner
+from ..domain.resolve import normalise
 from ..domain.status import IN_PROGRESS, StatusVocabulary
 from ..domain.whenever import now_in, today_in
 from ..errors import (
@@ -67,7 +67,7 @@ from ..render import piece as render_piece
 from ..render import summary as render
 from ..render import youtube as render_youtube
 from .guard import guarded
-from .naming import warn_if_inactive
+from .naming import resolve as _resolve
 
 if TYPE_CHECKING:
     from .app import Context
@@ -337,17 +337,6 @@ def _named(ctx: Context) -> str:
             remedy=f'Name one: `baton lesson {ctx.args.lesson_command} "<name>"`.',
         )
     return name
-
-
-def _resolve(ctx: Context, store, name: str):
-    learner = resolve_learner(
-        name,
-        store.list_learners(),
-        aliases=ctx.config.get("db.aliases", {}) or {},
-        label=ctx.config.label("learner"),
-    )
-    warn_if_inactive(ctx, learner)
-    return learner
 
 
 def _capture_piece_snapshot(store: LearnerStore, learner: Learner) -> PieceSnapshot:

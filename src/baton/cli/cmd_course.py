@@ -39,10 +39,9 @@ from ..adapters.docs import open_docs
 from ..adapters.docs.base import DocPage, DocStore, TableRow
 from ..core.jsonio import backup_path, read_json, write_json
 from ..domain.archive import SpanFormat, archive_title, strip_span
-from ..domain.resolve import resolve_learner
 from ..errors import GateError, UpstreamError, UsageError
 from ..exits import Exit
-from .naming import warn_if_inactive
+from .naming import resolve as _resolve
 
 if TYPE_CHECKING:
     from .app import Context
@@ -162,17 +161,6 @@ def _span_format(ctx: Context) -> SpanFormat:
         separator=str(section.get("separator", " - ")),
         joiner=str(section.get("joiner", "/")),
     )
-
-
-def _resolve(ctx: Context, store: Any) -> Any:
-    learner = resolve_learner(
-        ctx.args.name,
-        store.list_learners(),
-        aliases=ctx.config.get("db.aliases", {}) or {},
-        label=ctx.config.label("learner"),
-    )
-    warn_if_inactive(ctx, learner)
-    return learner
 
 
 def _sessions(ctx: Context, store: Any, learner: Any) -> list[Any]:
@@ -508,7 +496,7 @@ def _read_copy(
 def _plan(ctx: Context, *, allow_existing: bool) -> dict[str, Any]:
     """Everything the harness needs, and everything verify checks against."""
     with store_scope(ctx.config) as store:
-        learner = _resolve(ctx, store)
+        learner = _resolve(ctx, store, ctx.args.name)
         sessions = _sessions(ctx, store, learner)
 
     docs = open_docs(ctx.config)
@@ -732,7 +720,7 @@ def _require_archive(
 
 def handle_clear(ctx: Context) -> Exit:
     with store_scope(ctx.config) as store:
-        learner = _resolve(ctx, store)
+        learner = _resolve(ctx, store, ctx.args.name)
         sessions = _sessions(ctx, store, learner)
 
     wanted = ctx.args.session

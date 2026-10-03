@@ -17,7 +17,7 @@ from ..domain.localdate import DateFormat
 from ..domain.models import WEEKDAYS, Learner, Session, Work
 from ..domain.notion_urls import detect_week, parse_page_id
 from ..domain.prep import SectionRules
-from ..domain.resolve import normalise, resolve_learner
+from ..domain.resolve import normalise
 from ..domain.status import StatusVocabulary
 from ..domain.whenever import today_in
 from ..errors import BatonError, ConfigError, GateError, NeedsHumanError, UpstreamError, UsageError
@@ -32,7 +32,7 @@ from ..pipelines.recording import (
 )
 from ..pipelines.staging import PublishedRecord
 from .cmd_calendar import _scheduler
-from .naming import warn_if_inactive
+from .naming import resolve as _resolve
 
 if TYPE_CHECKING:
     from .app import Context
@@ -429,24 +429,6 @@ def _history(ctx: Context, store) -> LearnerHistory:
     )
 
 
-def _resolve(ctx: Context, store, name: str):
-    """Resolve a typed name, or raise NeedsHumanError with candidates.
-
-    A trashed learner's name never resolves here: ``store.list_learners()``
-    excludes them by default, so trash acts on every other command exactly
-    like the learner is gone. Only ``trash``/``untrash`` themselves need to
-    find one; they use :func:`_resolve_including_trashed` instead.
-    """
-    learner = resolve_learner(
-        name,
-        store.list_learners(),
-        aliases=ctx.config.get("db.aliases", {}) or {},
-        label=ctx.config.label("learner"),
-    )
-    warn_if_inactive(ctx, learner)
-    return learner
-
-
 def _recording_session(ctx: Context, store, learner: Learner, wanted: int) -> SessionView:
     """The in-progress session a recording-only lesson will complete."""
 
@@ -485,17 +467,6 @@ def _recording_preview(
         doc_url=status.url,
     )
     return message, recording_blocks(work, message=message)
-
-
-def _resolve_including_trashed(ctx: Context, store, name: str):
-    """Like :func:`_resolve`, but a trashed learner's exact name still finds
-    them. Used only by ``learner trash``/``learner untrash``."""
-    return resolve_learner(
-        name,
-        store.list_learners(include_trashed=True),
-        aliases=ctx.config.get("db.aliases", {}) or {},
-        label=ctx.config.label("learner"),
-    )
 
 
 def _session_line(view: SessionView, vocabulary: StatusVocabulary, label: str) -> str:
@@ -1131,7 +1102,7 @@ def handle_trash(ctx: Context) -> Exit:
     Trashing twice is safe and changes nothing further.
     """
     with store_scope(ctx.config) as store:
-        learner = _resolve_including_trashed(ctx, store, ctx.args.name)
+        learner = _resolve(ctx, store, ctx.args.name, include_trashed=True)
         if ctx.args.dry_run:
             ctx.report.result(
                 {"learner": learner.to_dict(), "dry_run": True},
@@ -1154,7 +1125,7 @@ def handle_trash(ctx: Context) -> Exit:
 def handle_untrash(ctx: Context) -> Exit:
     """The reverse of `learner trash`. Safe on a learner who was never trashed."""
     with store_scope(ctx.config) as store:
-        learner = _resolve_including_trashed(ctx, store, ctx.args.name)
+        learner = _resolve(ctx, store, ctx.args.name, include_trashed=True)
         store.untrash_learner(learner.id)
 
     ctx.report.result(

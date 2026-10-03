@@ -17,7 +17,7 @@ from ..adapters.cal.base import CalendarEvent
 from ..adapters.db import store_scope
 from ..adapters.docs import open_docs
 from ..domain.models import Learner
-from ..domain.resolve import resolve_learner, resolve_learner_loose
+from ..domain.resolve import resolve_learner_loose
 from ..domain.status import StatusVocabulary
 from ..domain.whenever import combine, parse_date, parse_schedule, parse_time, today_in
 from ..errors import BatonError, UsageError
@@ -25,7 +25,7 @@ from ..exits import Exit
 from ..pipelines.learner import LearnerHistory
 from ..pipelines.schedule import Scheduler, StandingSync
 from .guard import guarded
-from .naming import warn_if_inactive
+from .naming import resolve as _resolve
 
 if TYPE_CHECKING:
     from .app import Context
@@ -158,17 +158,6 @@ def _require_subcommand(ctx: Context) -> Exit:
 
 
 # -- plumbing ----------------------------------------------------------------
-
-
-def _resolve(ctx: Context, store, name: str):
-    learner = resolve_learner(
-        name,
-        store.list_learners(),
-        aliases=ctx.config.get("db.aliases", {}) or {},
-        label=ctx.config.label("learner"),
-    )
-    warn_if_inactive(ctx, learner)
-    return learner
 
 
 def _resolve_for_booking(ctx: Context, store, name: str) -> tuple[Learner, str]:
@@ -604,14 +593,7 @@ def _resolve_for_standing(ctx: Context, store, name: str | None):
     other command."""
     if name is None:
         return None
-    learner = resolve_learner(
-        name,
-        store.list_learners(),
-        aliases=ctx.config.get("db.aliases", {}) or {},
-        label=ctx.config.label("learner"),
-    )
-    warn_if_inactive(ctx, learner)
-    return learner
+    return _resolve(ctx, store, name)
 
 
 @guarded("calendar")

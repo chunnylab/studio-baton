@@ -25,7 +25,6 @@ from ..core.video_waivers import DEFAULT_TTL_MINUTES, VideoWaivers, generate_cod
 from ..domain.localdate import DateFormat
 from ..domain.models import Learner, Work
 from ..domain.prep import SectionRules
-from ..domain.resolve import resolve_learner
 from ..domain.status import StatusVocabulary
 from ..domain.whenever import parse_date
 from ..errors import BatonError, ConfigError, GateError, NeedsHumanError, StateError, UsageError
@@ -45,7 +44,7 @@ from ..pipelines.staging import (
     StagingStore,
 )
 from .guard import guarded
-from .naming import warn_if_inactive
+from .naming import resolve as _resolve
 
 if TYPE_CHECKING:
     from .app import Context
@@ -255,17 +254,6 @@ def _require_subcommand(ctx: Context) -> Exit:
         "`baton send` needs a subcommand.",
         remedy="Try `baton send lesson <name> --to <contact>`.",
     )
-
-
-def _resolve(ctx: Context, store, name: str):
-    learner = resolve_learner(
-        name,
-        store.list_learners(),
-        aliases=ctx.config.get("db.aliases", {}) or {},
-        label=ctx.config.label("learner"),
-    )
-    warn_if_inactive(ctx, learner)
-    return learner
 
 
 def _required_optional(ctx: Context) -> tuple[list[str], list[str]]:

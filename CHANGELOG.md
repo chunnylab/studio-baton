@@ -4,6 +4,18 @@ Notable changes per release. Anything that changes what a studio has to do is
 under **Upgrading**; the rest is grouped by what it affects. Every release back
 to 0.1.0 has an entry, and every tag carries a GitHub release.
 
+## Unreleased
+
+### Lessons
+
+- **`teacher_followup`, a suggestion for the teacher.** Optional in the
+  summary schema and asked for by `lesson contract`: one to four
+  suggestions on what to watch next lesson, kept with the summary and the
+  published record. No renderer writes it, so it never reaches the page or
+  the message. Anything that changes what a studio has to do is
+under **Upgrading**; the rest is grouped by what it affects. Every release back
+to 0.1.0 has an entry, and every tag carries a GitHub release.
+
 ## 1.13.0 (2026-10-03)
 
 ### Calendar

@@ -1502,3 +1502,29 @@ def test_clear_force_discards_even_the_unfinished_ones(studio, capsys):
     payload = out(capsys)
     assert payload["removed"] == 1
     assert payload["kept"] == []
+
+
+def test_teacher_followup_never_reaches_the_page_or_the_message(studio, capsys):
+    stage_ada(studio, capsys)
+    summary = {**SUMMARY, "teacher_followup": ["Listen for the bar 12 rush"]}
+    assert call(studio, "ingest", "Ada Whitfield", "--json-text", json.dumps(summary)) == Exit.OK
+    capsys.readouterr()
+
+    call(studio, "render", "Ada Whitfield")
+    assert "bar 12 rush" not in out(capsys)["markdown"]
+
+    call(studio, "render", "Ada Whitfield", "--format", "message")
+    assert "bar 12 rush" not in out(capsys)["message"]
+
+    from baton.render.summary import to_blocks
+
+    assert "bar 12 rush" not in json.dumps(to_blocks(summary), ensure_ascii=False)
+
+
+def test_the_contract_asks_for_the_teacher_followup(studio, capsys):
+    stage_ada(studio, capsys)
+    capsys.readouterr()
+
+    call(studio, "contract", "Ada Whitfield")
+    joined = " ".join(out(capsys)["instructions"])
+    assert "teacher_followup" in joined

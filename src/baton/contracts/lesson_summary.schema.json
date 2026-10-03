@@ -179,6 +179,17 @@
           "maxLength": 300
         }
       }
+    },
+    "teacher_followup": {
+      "description": "For the teacher only, never shown to a family: what to watch for or develop next lesson, drawn from this lesson's notes. A suggestion, not an instruction.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 300
+      }
     }
   }
 }

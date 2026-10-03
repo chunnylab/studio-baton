@@ -515,3 +515,21 @@ def test_an_empty_pool_reports_nothing():
     summary = {"overview": ["We worked on Encour."]}
 
     assert vocabulary_near_misses(summary, []) == []
+
+
+def test_teacher_followup_is_optional_and_shaped():
+    payload = copy.deepcopy(VALID)
+    validate_lesson_summary(payload)  # absent is fine
+    payload["teacher_followup"] = ["Check the F change is on the beat now"]
+    validate_lesson_summary(payload)
+    for bad in ([], ["ok"], ["x" * 301], ["a", "b", "c", "d", "e"]):
+        payload["teacher_followup"] = bad
+        with pytest.raises(ContractError):
+            validate_lesson_summary(payload)
+
+
+def test_a_followup_echoing_focus_is_not_repetition():
+    payload = copy.deepcopy(VALID)
+    echo = payload["focus"][0]["issue"]
+    payload["teacher_followup"] = [echo, echo + " again", echo + " once more"]
+    validate_lesson_summary(payload)

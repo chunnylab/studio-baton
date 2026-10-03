@@ -1114,6 +1114,12 @@ def handle_contract(ctx: Context) -> Exit:
             "Describe what was observed rather than what it means: what they "
             "managed, how much help it took, what changed.",
             "Only use callout ids from `available_callout_ids`; never write theory text.",
+            "Add `teacher_followup`: one to four short suggestions for the "
+            "teacher, not the family, on what to watch for or develop next "
+            "lesson. Draw them only from `lesson_notes`, phrase them as "
+            "suggestions the teacher may ignore, and write them in the "
+            "profile's language. They are never shown on the page or in the "
+            "message.",
             f"Write in the language of this profile ({ctx.config.locale}).",
             *(
                 [

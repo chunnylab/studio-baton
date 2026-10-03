@@ -31,7 +31,7 @@ from ..adapters.db.base import LearnerStore
 from ..adapters.docs.base import DocStore
 from ..domain.models import WEEKDAYS, Learner, LessonSlot, Session
 from ..domain.status import DONE, IN_PROGRESS, NOT_STARTED, StatusVocabulary
-from ..domain.whenever import combine, parse_time, today_in
+from ..domain.whenever import combine, day_window, parse_time, today_in
 from ..errors import BatonError, GateError, StateError, UsageError
 from .learner import SessionView
 
@@ -366,8 +366,7 @@ class Scheduler:
         """
         self._check_window(day, rollback_window_days, today)
 
-        start = combine(day, parse_time("00:00"), self.timezone).isoformat()
-        end = combine(day + timedelta(days=1), parse_time("00:00"), self.timezone).isoformat()
+        start, end = day_window(day, day, self.timezone)
         events = sorted(self.calendar.list_between(start, end), key=lambda event: event.start)
         by_name = {item.name: item for item in store.list_learners() if item.is_active}
 
@@ -512,12 +511,11 @@ class Scheduler:
         "who is coming".
         """
         reference = today or today_in(self.timezone)
-        start = combine(
-            reference - timedelta(days=window_days - 1), parse_time("00:00"), self.timezone
+        start, end = day_window(
+            reference - timedelta(days=window_days - 1), reference, self.timezone
         )
-        end = combine(reference + timedelta(days=1), parse_time("00:00"), self.timezone)
         events = sorted(
-            self.calendar.list_between(start.isoformat(), end.isoformat()),
+            self.calendar.list_between(start, end),
             key=lambda event: event.start,
         )
 
@@ -580,8 +578,7 @@ class Scheduler:
         event naming no learner is listed, never guessed at: a person typed
         it, and only they know what it meant.
         """
-        start = combine(day, parse_time("00:00"), self.timezone).isoformat()
-        end = combine(day + timedelta(days=1), parse_time("00:00"), self.timezone).isoformat()
+        start, end = day_window(day, day, self.timezone)
         events = sorted(self.calendar.list_between(start, end), key=lambda event: event.start)
 
         # Active learners only: a deactivated learner's leftover event falls
@@ -640,8 +637,7 @@ class Scheduler:
         parenthesis of the session part. The legacy calendar skill learned
         the same lesson and switched to prefix matching for the same reason.
         """
-        start = combine(day, parse_time("00:00"), self.timezone).isoformat()
-        end = combine(day + timedelta(days=1), parse_time("00:00"), self.timezone).isoformat()
+        start, end = day_window(day, day, self.timezone)
         bare = f"{learner.name} ("
         with_icon = [f"{icon}{bare}" for icon in self._icon_prefixes()]
 

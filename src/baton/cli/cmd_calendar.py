@@ -19,7 +19,7 @@ from ..adapters.docs import open_docs
 from ..domain.models import Learner
 from ..domain.resolve import resolve_learner_loose
 from ..domain.status import StatusVocabulary
-from ..domain.whenever import combine, parse_date, parse_schedule, parse_time, today_in
+from ..domain.whenever import day_window, parse_date, parse_schedule, parse_time, today_in
 from ..errors import BatonError, UsageError
 from ..exits import Exit
 from ..pipelines.learner import LearnerHistory
@@ -493,8 +493,7 @@ def handle_list(ctx: Context) -> Exit:
         return _list_range(ctx, calendar)
 
     day = _date(ctx, ctx.args.date or "today")
-    start = combine(day, parse_time("00:00"), ctx.config.timezone).isoformat()
-    end = combine(day + timedelta(days=1), parse_time("00:00"), ctx.config.timezone).isoformat()
+    start, end = day_window(day, day, ctx.config.timezone)
     events: list[CalendarEvent] = calendar.list_between(start, end)
 
     payload = {"date": day.isoformat(), "events": [event.to_dict() for event in events]}
@@ -529,9 +528,7 @@ def _list_range(ctx: Context, calendar) -> Exit:
             remedy="Pass --from as the earlier day, --to as the later one.",
         )
 
-    midnight = parse_time("00:00")
-    start = combine(first, midnight, ctx.config.timezone).isoformat()
-    end = combine(last + timedelta(days=1), midnight, ctx.config.timezone).isoformat()
+    start, end = day_window(first, last, ctx.config.timezone)
     events: list[CalendarEvent] = calendar.list_between(start, end)
 
     # Every day in the range appears, empty or not: "nothing booked Thursday"

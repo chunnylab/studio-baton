@@ -281,6 +281,13 @@ def combine(day: date, moment: time, timezone: str) -> datetime:
     return datetime.combine(day, moment, tzinfo=ZoneInfo(timezone))
 
 
+def day_window(first: date, last: date, timezone: str) -> tuple[str, str]:
+    """ISO bounds from midnight starting ``first`` to midnight ending ``last``."""
+    start = combine(first, time(), timezone)
+    end = combine(last + timedelta(days=1), time(), timezone)
+    return start.isoformat(), end.isoformat()
+
+
 def _time_head_width(tokens: list[str], words: Mapping[str, object] | None) -> int:
     """How many leading tokens of a schedule line form the time.
 

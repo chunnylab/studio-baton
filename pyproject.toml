@@ -33,11 +33,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-supabase = ["supabase>=2.4"]
+# Kept so `studio-baton[supabase]` still installs: the Supabase driver is
+# PostgrestStore over `requests`, which core already ships.
+supabase = []
 google = [
   "google-api-python-client>=2.120",
   "google-auth>=2.28",
-  "google-auth-oauthlib>=1.2",
 ]
 dev = [
   "pytest>=8.0",

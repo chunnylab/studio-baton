@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from .. import contracts
 from ..adapters.cal import open_calendar
 from ..adapters.chat import open_chat
-from ..adapters.chat.base import Messenger, resolve_contact
+from ..adapters.chat.base import resolve_contact
 from ..adapters.chat.guard import GuardedMessenger
 from ..adapters.db import store_scope
 from ..adapters.docs import VIDEO_LINK_BLOCKS, find_video_link, open_docs
@@ -322,7 +322,7 @@ def _piece_sources(store, learner: Learner | None, published: Mapping[str, Any])
     return tuple(links)
 
 
-def _messenger(ctx: Context, *, what: str, key: str) -> Messenger:
+def _messenger(ctx: Context, *, what: str, key: str) -> GuardedMessenger:
     """The configured messenger, wrapped so one message cannot go out twice.
 
     Every send path in this module goes through here. That is the point: the
@@ -622,7 +622,7 @@ def _send_one(
                     f"{request} to text {reaches}, then re-run this with "
                     "--without-video <the code they were sent>.",
                 )
-        return send_lesson(
+        result = send_lesson(
             messenger,
             store,
             recipient_id=recipient_id,
@@ -635,6 +635,9 @@ def _send_one(
             optional=optional,
             dry_run=dry_run,
         )
+        if dry_run:
+            result["already_sent"] = messenger.receipt(recipient_id)
+        return result
 
 
 @guarded("send")
@@ -643,6 +646,12 @@ def handle_lesson(ctx: Context) -> Exit:
 
     verb = "would send" if ctx.args.dry_run else "sent"
     deliverable = "recording" if str(result.get("kind", "summary")) == RECORDING else "message"
+    prior = result.get("already_sent")
+    if prior:
+        ctx.report.warn(
+            f"This message already went out at {prior.get('sent_at')}; the real send "
+            "would be refused unless you pass --again."
+        )
     ctx.report.result(
         result,
         human=f"{verb.capitalize()} {deliverable} for {result['learner']} "

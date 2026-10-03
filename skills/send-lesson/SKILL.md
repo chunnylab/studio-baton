@@ -54,7 +54,9 @@ event that matched no learner is listed in `unmatched` rather than guessed at.
 Report those unmatched entries: they are usually a learner nobody sent for.
 
 **Run `--dry-run` first when sending for the first time that day.** It runs the
-same gate and shows the exact message, without sending.
+same gate and shows the exact message, without sending. When `already_sent` is
+not null, the message went out at its `sent_at` and the real send will be
+refused: report that and stop, as for "already sent" below.
 
 **Several learners go through `send batch`, in one command.** Do not loop over
 `send lesson`. A loop loses track of which ones went, which is the failure the

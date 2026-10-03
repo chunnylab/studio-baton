@@ -196,6 +196,30 @@ def test_a_dry_run_writes_no_receipt(studio, capsys):  # noqa: F811
     assert len(messenger.sent) == 1
 
 
+def test_a_dry_run_says_when_the_real_send_would_be_refused(studio, capsys):  # noqa: F811
+    """A dry run that passes must not hide the receipt that stops the real send."""
+    profile, messenger, _docs = studio
+    publish(profile, "1")
+    call(studio, "lesson", "Ada Whitfield", "--to", "teacher")
+    capsys.readouterr()
+
+    assert call(studio, "lesson", "Ada Whitfield", "--to", "teacher", "--dry-run") == Exit.OK
+    captured = capsys.readouterr()
+
+    assert json.loads(captured.out)["already_sent"]["sent_at"]
+    assert "--again" in captured.err
+    assert len(messenger.sent) == 1
+
+
+def test_a_dry_run_before_any_send_reports_nothing_sent(studio, capsys):  # noqa: F811
+    profile, _messenger, _docs = studio
+    publish(profile, "1")
+
+    assert call(studio, "lesson", "Ada Whitfield", "--to", "teacher", "--dry-run") == Exit.OK
+
+    assert json.loads(capsys.readouterr().out)["already_sent"] is None
+
+
 def test_a_corrected_summary_still_needs_a_person_to_say_send_it_again(studio, capsys):  # noqa: F811
     """Republishing does not quietly re-open the send.
 

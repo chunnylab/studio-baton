@@ -4,6 +4,24 @@ Notable changes per release. Anything that changes what a studio has to do is
 under **Upgrading**; the rest is grouped by what it affects. Every release back
 to 0.1.0 has an entry, and every tag carries a GitHub release.
 
+## Unreleased
+
+### Sending
+
+- **`send lesson --dry-run` says when the real send would be refused.** The
+  JSON carries `already_sent` (the receipt, or `null`), and the human output
+  warns on stderr. A dry run used to pass while the send after it stopped on
+  the duplicate gate.
+
+### Maintenance
+
+- `from baton.adapters.media import *` no longer fails on `CombineResult`.
+- The `supabase` extra installs nothing extra (the driver is PostgREST over
+  `requests`), and the `google` extra no longer pulls `google-auth-oauthlib`.
+- Removed code nothing called: retry tuning options, `jsonio.write_text`, the
+  `write_json` backup switch, `StatusVocabulary.is_*`, `Reporter` stream
+  overrides, and the `baton.domain` re-exports.
+
 ## 1.12.0 (2026-09-28)
 
 ### Learners

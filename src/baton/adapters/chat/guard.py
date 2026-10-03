@@ -67,9 +67,22 @@ class GuardedMessenger:
     def health(self) -> None:
         self._inner.health()
 
-    def send(self, recipient_id: str, text: str) -> SendOutcome:
+    def _digest(self, recipient_id: str, text: str) -> tuple[str, str]:
         service = str(getattr(self._inner, "service", "chat"))
-        key = Receipts.digest(service, recipient_id, self._key if self._key else text)
+        return service, Receipts.digest(service, recipient_id, self._key if self._key else text)
+
+    def receipt(self, recipient_id: str, text: str = "") -> dict[str, Any] | None:
+        """The receipt that would refuse :meth:`send`, if any. Reads only.
+
+        A dry run asks this, so a gate that passes on paper does not hide the
+        refusal the real send would meet.
+        """
+        if self._again:
+            return None
+        return self._receipts.find(self._digest(recipient_id, text)[1])
+
+    def send(self, recipient_id: str, text: str) -> SendOutcome:
+        service, key = self._digest(recipient_id, text)
         self._receipts.guard(key, what=self._what, again=self._again)
 
         outcome = self._inner.send(recipient_id, text)

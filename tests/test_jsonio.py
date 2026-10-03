@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from baton.core import jsonio
 
 
@@ -44,15 +42,6 @@ def test_second_write_snapshots_the_previous_file(tmp_path):
     assert json.loads(jsonio.backup_path(target).read_text(encoding="utf-8")) == {"generation": 1}
 
 
-def test_backup_can_be_disabled(tmp_path):
-    target = tmp_path / "state.json"
-
-    jsonio.write_json(target, {"generation": 1}, backup=False)
-    jsonio.write_json(target, {"generation": 2}, backup=False)
-
-    assert not jsonio.backup_path(target).exists()
-
-
 def test_corrupt_file_falls_back_to_backup(tmp_path):
     target = tmp_path / "state.json"
     jsonio.write_json(target, {"generation": 1})
@@ -82,15 +71,6 @@ def test_no_temp_file_survives_a_successful_write(tmp_path):
 
     leftovers = [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"]
     assert leftovers == []
-
-
-@pytest.mark.parametrize("text", ["short", "ครูสอนกีตาร์\nบรรทัดที่สอง\n"])
-def test_write_text_round_trip(tmp_path, text):
-    target = tmp_path / "note.md"
-
-    jsonio.write_text(target, text)
-
-    assert target.read_text(encoding="utf-8") == text
 
 
 def test_losing_both_copies_is_said_out_loud(tmp_path, capsys):

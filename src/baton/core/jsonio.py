@@ -94,23 +94,23 @@ def _quarantine(path: Path) -> Path | None:
     return target
 
 
-def write_json(path: str | Path, data: Any, *, backup: bool = True) -> None:
-    """Write ``data`` as JSON atomically, optionally snapshotting the old file.
+def write_json(path: str | Path, data: Any) -> None:
+    """Write ``data`` as JSON atomically, snapshotting the old file first.
 
     Writes to a temp file in the same directory, fsyncs it, then ``os.replace``
     (atomic on one filesystem) into place while holding an exclusive lock.
 
     Args:
         path: Destination file.
-        data: Any JSON-serialisable value.
-        backup: Copy the existing file to ``<name>.bak`` before replacing it.
+        data: Any JSON-serialisable value. The existing file, if any, is
+            copied to ``<name>.bak`` before it is replaced.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
 
     with _locked(path, exclusive=True):
-        if backup and path.exists():
+        if path.exists():
             _snapshot(path)
         with open(tmp_path, "w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, ensure_ascii=False)
@@ -170,19 +170,3 @@ def read_json(path: str | Path, default: Any = None) -> Any:
         )
 
     return default
-
-
-def write_text(path: str | Path, text: str, *, backup: bool = True) -> None:
-    """Write text atomically with the same crash guarantees as :func:`write_json`."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-
-    with _locked(path, exclusive=True):
-        if backup and path.exists():
-            _snapshot(path)
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)

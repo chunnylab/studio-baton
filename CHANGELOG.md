@@ -21,6 +21,8 @@ to 0.1.0 has an entry, and every tag carries a GitHub release.
 - Removed code nothing called: retry tuning options, `jsonio.write_text`, the
   `write_json` backup switch, `StatusVocabulary.is_*`, `Reporter` stream
   overrides, and the `baton.domain` re-exports.
+- The Windows code paths are gone, along with the Windows-only `tzdata`
+  dependency. Windows was already unsupported and untested in CI.
 
 ## 1.12.0 (2026-09-28)
 

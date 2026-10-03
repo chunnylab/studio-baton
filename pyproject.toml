@@ -27,9 +27,6 @@ dependencies = [
   "PyYAML>=6.0",
   "requests>=2.31",
   "jsonschema>=4.20",
-  # Windows ships no system tz database, so `zoneinfo` finds nothing there and
-  # every date Baton computes raises. Every other platform already has one.
-  "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

@@ -1,7 +1,7 @@
 """Crash-safe JSON and text persistence.
 
-Ported from the original workspace ``scripts/utils.py``, with the POSIX-only
-``fcntl`` dependency replaced by a portable lock so Baton runs on Windows too.
+Ported from the original workspace ``scripts/utils.py``. Locking uses POSIX
+``fcntl``; Baton does not support Windows.
 
 The guarantee callers rely on: a kill at any instant leaves either the previous
 file fully intact or the new file fully written, never a truncated one. Every
@@ -10,19 +10,15 @@ piece of resumable pipeline state in Baton goes through here.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-if sys.platform == "win32":  # pragma: no cover - platform specific
-    import msvcrt
-else:
-    import fcntl
 
 
 @contextmanager
@@ -38,21 +34,11 @@ def _locked(path: Path, exclusive: bool) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "a+b") as handle:
         try:
-            if sys.platform == "win32":  # pragma: no cover - platform specific
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                fcntl.flock(handle, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            fcntl.flock(handle, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
             yield
         finally:
-            try:
-                if sys.platform == "win32":  # pragma: no cover - platform specific
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(handle, fcntl.LOCK_UN)
-            except OSError:
-                pass
+            with suppress(OSError):
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def backup_path(path: Path) -> Path:

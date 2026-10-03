@@ -26,6 +26,7 @@ orphaned job is to re-run the same command, not to investigate.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import signal
 import subprocess
@@ -61,12 +62,6 @@ HEARTBEAT_STALE_SECONDS = 300.0
 #: always works.
 DEFAULT_LIST_STALE_DAYS = 3.0
 
-if sys.platform == "win32":  # pragma: no cover - platform specific
-    import ctypes
-    import msvcrt
-else:
-    import fcntl
-
 
 def _now() -> str:
     # Millisecond precision: `job list` sorts by id, and the id embeds this
@@ -80,28 +75,10 @@ def _utcnow() -> datetime:
 
 
 def pid_alive(pid: int | None) -> bool:
-    """Whether a process is running right now.
-
-    Must never be given ``os.kill`` on Windows: there, ``os.kill`` with a
-    non-signal argument *terminates* the target instead of probing it. The
-    ctypes path is the safe probe.
-    """
+    """Whether a process is running right now. POSIX only: on Windows,
+    ``os.kill(pid, 0)`` terminates the target instead of probing it."""
     if not pid or pid <= 0:
         return False
-    if sys.platform == "win32":  # pragma: no cover - platform specific
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        try:
-            code = ctypes.c_ulong()
-            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return code.value == STILL_ACTIVE
-            return True  # cannot tell; assume alive rather than declare orphaned
-        finally:
-            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -253,14 +230,9 @@ class JobRunner:
             "cwd": os.getcwd(),
             "close_fds": True,
         }
-        if sys.platform == "win32":  # pragma: no cover - platform specific
-            popen_kwargs["creationflags"] = (
-                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-            )
-        else:
-            # New session: no controlling terminal, immune to the HUP that
-            # arrives when the invoking terminal closes.
-            popen_kwargs["start_new_session"] = True
+        # New session: no controlling terminal, immune to the HUP that
+        # arrives when the invoking terminal closes.
+        popen_kwargs["start_new_session"] = True
 
         process = subprocess.Popen(supervisor_argv, **popen_kwargs)
         self._write_meta(job_id, pid=process.pid)
@@ -482,37 +454,18 @@ class JobRunner:
 
         pid = info.pid
         if pid:
-            if sys.platform == "win32":  # pragma: no cover - platform specific
-                # No signal semantics on Windows: ask the whole tree to close,
-                # then force it.
-                with suppress(OSError):
-                    subprocess.run(
-                        ["taskkill", "/PID", str(pid), "/T"],  # noqa: S607 - on PATH by definition on Windows
-                        capture_output=True,
-                        check=False,
-                    )
-                settled = self.wait(job_id, timeout=grace)
-                if settled is not None and settled.status in TERMINAL_STATUSES:
-                    return settled
-                with suppress(OSError):
-                    subprocess.run(
-                        ["taskkill", "/PID", str(pid), "/T", "/F"],  # noqa: S607
-                        capture_output=True,
-                        check=False,
-                    )
-            else:
-                # SIGTERM first so the supervisor can record `stopped` and let
-                # the child clean up; SIGKILL only once grace has run out.
-                with suppress(ProcessLookupError, PermissionError):
-                    os.kill(pid, signal.SIGTERM)
-                deadline = time.monotonic() + grace
-                while time.monotonic() < deadline:
-                    current = self._require(job_id)
-                    if current.status in TERMINAL_STATUSES:
-                        return current
-                    time.sleep(0.2)
-                with suppress(ProcessLookupError, PermissionError):
-                    os.kill(pid, signal.SIGKILL)
+            # SIGTERM first so the supervisor can record `stopped` and let
+            # the child clean up; SIGKILL only once grace has run out.
+            with suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline:
+                current = self._require(job_id)
+                if current.status in TERMINAL_STATUSES:
+                    return current
+                time.sleep(0.2)
+            with suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
 
         settled = self.wait(job_id, timeout=5.0)
         return settled if settled is not None else self._require(job_id)
@@ -575,11 +528,7 @@ class RunLock:
         # Held open for the life of the lock: closing it *is* releasing it.
         handle = open(self.path, "a+b")  # noqa: SIM115
         try:
-            if sys.platform == "win32":  # pragma: no cover - platform specific
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             handle.close()
             holder = "unknown"
@@ -601,11 +550,7 @@ class RunLock:
     def release(self) -> None:
         if self._handle is not None:
             with suppress(OSError):
-                if sys.platform == "win32":  # pragma: no cover - platform specific
-                    self._handle.seek(0)
-                    msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(self._handle, fcntl.LOCK_UN)
+                fcntl.flock(self._handle, fcntl.LOCK_UN)
             self._handle.close()
         self._handle = None
 

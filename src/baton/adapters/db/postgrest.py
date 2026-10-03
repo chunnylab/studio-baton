@@ -23,12 +23,9 @@ from ...core.retry import http_request
 from ...domain.models import Learner, LessonSlot, Piece, Session, Work, weekday_rank
 from ...errors import ConfigError, StateError, UpstreamError, UsageError
 from .base import FieldMap
+from .base import to_bool as _to_bool
+from .base import to_text as _text
 from .mapping import Schema
-
-
-def _text(value: Any) -> str:
-    return "" if value is None else str(value)
-
 
 _REST_PATH = "/rest/v1"
 
@@ -59,16 +56,6 @@ def _supabase_base(url: str) -> str:
     if base.endswith(_REST_PATH):
         base = base[: -len(_REST_PATH)].rstrip("/")
     return base
-
-
-def _to_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "t", "yes", "y"}
-    return False
 
 
 class PostgrestStore:

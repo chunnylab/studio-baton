@@ -22,6 +22,8 @@ from ...core.config import Config
 from ...domain.models import Learner, LessonSlot, Piece, Session, Work, weekday_rank
 from ...errors import ConfigError, StateError, UpstreamError, UsageError
 from .base import FieldMap
+from .base import to_bool as _to_bool
+from .base import to_text as _text
 from .mapping import Schema
 
 #: How long a statement waits for a competing writer before giving up. SQLite
@@ -54,21 +56,6 @@ def _contention_error(exc: sqlite3.OperationalError) -> UpstreamError:
         remedy="Wait for the other command to finish and run this again. If it "
         "happens often, raise db.sqlite.busy_timeout_ms.",
     )
-
-
-def _to_bool(value: Any) -> bool:
-    """SQLite has no boolean type, and studios spell it every possible way."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "t", "yes", "y"}
-    return False
-
-
-def _text(value: Any) -> str:
-    return "" if value is None else str(value)
 
 
 class SqliteStore:

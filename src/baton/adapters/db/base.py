@@ -19,6 +19,24 @@ from typing import Any, Protocol, runtime_checkable
 from ...domain.models import Learner, LessonSlot, Piece, Session, Work
 from ...errors import ConfigError
 
+
+def to_bool(value: Any) -> bool:
+    """A stored flag as a bool. Databases without a boolean type, and the
+    studios filling them, spell it every possible way."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "t", "yes", "y"}
+    return False
+
+
+def to_text(value: Any) -> str:
+    """A stored value as text, with ``None`` read as empty."""
+    return "" if value is None else str(value)
+
+
 #: A plain SQL identifier. Anything else is rejected rather than quoted, so a
 #: typo in baton.yaml surfaces as a config error instead of broken SQL, and a
 #: hand-edited profile cannot smuggle a fragment into a query.

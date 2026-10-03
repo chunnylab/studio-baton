@@ -21,7 +21,6 @@ nobody's recording goes out that night.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -44,6 +43,7 @@ from ..adapters.media.base import (
 from ..adapters.media.google import extract_video_id
 from ..core import jsonio
 from ..core.cleanup import CleanupLedger
+from ..core.paths import safe_key as _slug
 from ..domain.models import Learner
 from ..domain.resolve import normalise
 from ..errors import BatonError, StateError
@@ -59,7 +59,6 @@ STEPS = (
     "source_trashed",
 )
 
-_SAFE = re.compile(r"[^A-Za-z0-9_.-]")
 _NATURAL_SPLIT = re.compile(r"(\d+)")
 
 
@@ -75,26 +74,6 @@ def _natural_key(path: Path) -> list[Any]:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _slug(value: str) -> str:
-    """A filesystem-safe key for a learner folder.
-
-    ``_SAFE`` only keeps ASCII, so a folder named entirely in Thai (or any
-    other non-Latin script) strips to nothing and every such learner used to
-    collapse onto the same literal ``"unknown"`` file: one child's job record
-    silently became another's. The hash keeps that collision from happening
-    while staying deterministic and still readable as "this was non-ASCII".
-    """
-    cleaned = _SAFE.sub("_", str(value)).strip("._")
-    if not cleaned:
-        cleaned = (
-            "unknown_"
-            + hashlib.sha1(  # noqa: S324 - filename key, not a digest
-                str(value).encode("utf-8")
-            ).hexdigest()[:12]
-        )
-    return cleaned[:100]
 
 
 @dataclass

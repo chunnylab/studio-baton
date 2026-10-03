@@ -12,8 +12,6 @@ will tell you which is which.
 
 from __future__ import annotations
 
-import hashlib
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,6 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..core import jsonio
+from ..core.paths import safe_key as _slug
 from ..domain.models import Piece, Work
 from ..errors import UsageError
 
@@ -31,7 +30,6 @@ PUBLISHED = "published"
 SUMMARY = "summary"
 RECORDING = "recording"
 
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]")
 
 PieceSnapshotStatus = Literal["captured", "none", "unavailable"]
 
@@ -44,26 +42,6 @@ ClearResult = tuple[list[str], list[dict[str, Any]]]
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _slug(value: str) -> str:
-    """A filesystem-safe key for a learner id.
-
-    Ids come from a studio's own database and may be anything at all, so they
-    are never used as a path component unescaped. A hash fallback (rather than
-    a bare "unknown") keeps two ids that both strip to nothing (non-ASCII
-    ones, in particular) from colliding on the same file. See the video
-    pipeline's ``_slug`` for the incident that made this the pattern here too.
-    """
-    cleaned = _SAFE_NAME.sub("_", str(value)).strip("._")
-    if not cleaned:
-        cleaned = (
-            "unknown_"
-            + hashlib.sha1(  # noqa: S324 - filename key, not a digest
-                str(value).encode("utf-8")
-            ).hexdigest()[:12]
-        )
-    return cleaned[:100]
 
 
 def _invalid_snapshot() -> UsageError:

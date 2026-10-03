@@ -8,7 +8,9 @@ be nothing but config: the code never reaches outside the profile.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from pathlib import Path
 
 from ..errors import ConfigError
@@ -18,6 +20,29 @@ CONFIG_FILENAME = "baton.yaml"
 #: Environment variable pointing at a profile directory (or directly at a
 #: ``baton.yaml``). Set this in a harness container and every command finds it.
 PROFILE_ENV = "BATON_PROFILE"
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def safe_key(value: str) -> str:
+    """A filesystem-safe key for a learner id or folder name.
+
+    Ids and folder names come from a studio's own data and may be anything,
+    so they are never used as a path component unescaped. ``_UNSAFE`` keeps
+    only ASCII, so a name written entirely in Thai strips to nothing; every
+    such learner used to collapse onto one literal ``"unknown"`` file, and one
+    child's job record silently became another's. The hash keeps those apart
+    while staying deterministic and readable as "this was non-ASCII".
+    """
+    cleaned = _UNSAFE.sub("_", str(value)).strip("._")
+    if not cleaned:
+        cleaned = (
+            "unknown_"
+            + hashlib.sha1(  # noqa: S324 - filename key, not a digest
+                str(value).encode("utf-8")
+            ).hexdigest()[:12]
+        )
+    return cleaned[:100]
 
 
 def _xdg_config_home() -> Path:

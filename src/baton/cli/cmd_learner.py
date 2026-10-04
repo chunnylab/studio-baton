@@ -25,6 +25,7 @@ from ..exits import Exit
 from ..pipelines.learner import LearnerHistory, PublishedPieceUpdater, SessionView
 from ..pipelines.recording import (
     attach_work,
+    check_recording_draft,
     complete_recording_work,
     compose_recording,
     list_candidates,
@@ -1372,6 +1373,10 @@ def handle_add_work(ctx: Context) -> Exit:
             )
             return Exit.OK
 
+        if view is not None:
+            # Before the row is written: a refusal after it left a work
+            # behind, and every retry of the same press added another.
+            check_recording_draft(ctx.config, learner, view)
         created = store.add_work(proposed)
 
     if view is not None:

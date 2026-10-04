@@ -294,24 +294,47 @@ def _existing_recording_section(
     return []
 
 
+def check_recording_draft(
+    config: Config, learner: Learner, view: SessionView, work_id: str | None = None
+) -> LessonDraft | None:
+    """The draft a recording lesson may continue, or None to start a fresh one.
+
+    A finished lesson's draft is replaced, as `lesson stage` replaces it:
+    every learner with a summary last week still has that published draft
+    on disk. Any other lesson's draft is work still owed and is refused.
+    ``work_id`` None means a work not yet written, so a half-finished
+    recording for this session is refused too, rather than given a second
+    work. Callers run this before writing the work, so a refusal records
+    nothing.
+    """
+    staging = StagingStore(config.state_dir / "lessons")
+    draft = staging.get(learner.id)
+    if draft is None:
+        return None
+    same = draft.kind == RECORDING and draft.session_number == view.session.number
+    if not same and draft.status == PUBLISHED:
+        return None
+    if not same:
+        raise UsageError(
+            f"{learner.name} already has a {draft.kind} draft for {draft.session_number}.",
+            remedy=f'Publish or remove it first (`baton lesson publish "{learner.name}"`, '
+            f'or `baton lesson remove "{learner.name}"` after checking it).',
+        )
+    if draft.work_id and draft.work_id != (work_id or ""):
+        raise StateError(
+            f"A recording draft for {learner.name} already names work `{draft.work_id}`.",
+            remedy=f"Recover that work, or remove the draft after checking `{draft.work_id}`.",
+        )
+    return draft
+
+
 def _recording_draft(
     config: Config, learner: Learner, view: SessionView, work: Work
 ) -> LessonDraft:
     """Create or recover the one staging draft for this recording lesson."""
 
     staging = StagingStore(config.state_dir / "lessons")
-    draft = staging.get(learner.id)
-    if draft is not None and (
-        draft.kind != RECORDING or draft.session_number != view.session.number
-    ):
-        raise UsageError(
-            f"{learner.name} already has a {draft.kind} draft for {draft.session_number}."
-        )
-    if draft is not None and draft.work_id and draft.work_id != work.id:
-        raise StateError(
-            f"A recording draft for {learner.name} already names work `{draft.work_id}`.",
-            remedy=f"Recover that work, or remove the draft after checking `{draft.work_id}`.",
-        )
+    draft = check_recording_draft(config, learner, view, work.id)
     if draft is None:
         draft = LessonDraft(
             learner_id=learner.id,

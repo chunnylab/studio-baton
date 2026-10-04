@@ -419,3 +419,78 @@ def test_a_complete_recording_still_writes_the_message_over_bare_links(studio, c
     record = PublishedRecord(profile / "state" / "published").get("1", 3)
     assert record is not None
     assert record["blocks"]
+
+
+def _add_work(profile, title="Blackbird: finished take"):
+    return run(
+        [
+            "--profile",
+            str(profile),
+            "--json",
+            "learner",
+            "add-work",
+            "Ada Whitfield",
+            "--title",
+            title,
+            "--drive-link",
+            WORK["drive_link"],
+            "--session",
+            "3",
+        ]
+    )
+
+
+def _stage_summary(profile, session: int, status: str):
+    from baton.pipelines.staging import LessonDraft, PieceSnapshot
+
+    staging = StagingStore(profile / "state" / "lessons")
+    draft = LessonDraft(
+        learner_id="1",
+        learner_name="Ada Whitfield",
+        session_number=session,
+        piece_snapshot=PieceSnapshot.capture(None),
+        doc_id=f"doc-ada-0{session}",
+    )
+    draft.status = status
+    staging.save(draft)
+
+
+def _work_count(profile) -> int:
+    connection = sqlite3.connect(profile / "data" / "studio.db")
+    try:
+        return connection.execute("SELECT COUNT(*) FROM works WHERE learner_id = '1'").fetchone()[0]
+    finally:
+        connection.close()
+
+
+def test_the_previous_lessons_published_summary_does_not_block_a_recording(studio, capsys):
+    """Every learner who had a summary last week has its published draft on disk.
+
+    `lesson stage` replaces a published draft; a recording lesson must too, or
+    no learner with a past summary could ever close a lesson at its recording.
+    """
+    profile, docs = studio
+    _stage_summary(profile, 2, "published")
+
+    assert _add_work(profile) == Exit.OK
+    payload = out(capsys)
+    assert payload["published"] is True
+    assert docs.get_status("doc-ada-03").status == "Done"
+    draft = StagingStore(profile / "state" / "lessons").get("1")
+    assert draft is not None and draft.kind == "recording" and draft.session_number == 3
+
+
+def test_an_unfinished_summary_refuses_before_the_work_is_written(studio, capsys):
+    """A summary still owed is the teacher's work: refused, and nothing recorded.
+
+    The refusal used to come after the row was written, so every retry of a
+    refused press added the same work again.
+    """
+    profile, docs = studio
+    _stage_summary(profile, 3, "staged")
+    before = _work_count(profile)
+
+    assert _add_work(profile) == Exit.USAGE
+    assert "summary draft" in out(capsys)["message"]
+    assert _work_count(profile) == before
+    assert docs.get_status("doc-ada-03").status == "In progress"

@@ -4,6 +4,20 @@ Notable changes per release. Anything that changes what a studio has to do is
 under **Upgrading**; the rest is grouped by what it affects. Every release back
 to 0.1.0 has an entry, and every tag carries a GitHub release.
 
+## 1.14.1 (2026-10-04)
+
+### Recorded work
+
+- **`learner add-work --session` closes a lesson for a learner who had a
+  summary before.** A recording lesson refused any staged draft that was
+  not its own, and the published draft of last week's summary stays on
+  disk, so the command failed for nearly every real learner. A finished
+  draft is now replaced, the way `lesson stage` replaces it; an
+  unpublished draft is still refused, since that is a summary still owed.
+- **A refused `add-work --session` records nothing.** The draft check ran
+  after the work was written, so pressing again after a refusal added the
+  same work a second time. It now runs first.
+
 ## 1.14.0 (2026-10-03)
 
 ### Lessons

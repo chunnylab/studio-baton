@@ -31,6 +31,10 @@ RETRYABLE_STATUS: tuple[int, ...] = (429, 500, 502, 503, 504)
 _CREDENTIAL_IN_URL = re.compile(r"\b(bot|access_token|api_key|token)=[^&\s]+")
 _BOT_TOKEN_IN_PATH = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
 
+#: The longest ``Retry-After`` honoured. Notion asks for tens of seconds; a
+#: header asking for minutes is a fault better reported than slept through.
+RETRY_AFTER_CAP = 60.0
+
 
 def redact(text: str) -> str:
     """Hide credentials that can ride inside a URL before it reaches a message."""
@@ -47,6 +51,17 @@ def backoff_delay(attempt: int, *, base: float = 2.0, cap: float = 30.0) -> floa
     """
     # Not a security decision: this jitter only decorrelates retry timing.
     return min(cap, base * (2**attempt)) + random.uniform(0, 1)  # noqa: S311
+
+
+def retry_after(response: requests.Response) -> float | None:
+    """Seconds the server asked us to wait, when it said so as a number.
+
+    The HTTP-date form is left to the backoff: no API Baton calls sends it.
+    """
+    try:
+        return min(RETRY_AFTER_CAP, max(0.0, float(response.headers["Retry-After"])))
+    except (KeyError, ValueError):
+        return None
 
 
 def retry(
@@ -115,7 +130,10 @@ def http_request(
             # A timeout is always present: kwargs.setdefault above guarantees it.
             response = requests.request(method, url, **kwargs)  # noqa: S113
             if response.status_code in RETRYABLE_STATUS and attempt + 1 < attempts:
-                time.sleep(backoff_delay(attempt))
+                # A 429 says how long to wait. Retrying sooner spends an
+                # attempt on a request the server already said it will refuse:
+                # a batch booking lost a learner that way to an 18 s wait.
+                time.sleep(max(backoff_delay(attempt), retry_after(response) or 0.0))
                 continue
             return response
         except transient as exc:

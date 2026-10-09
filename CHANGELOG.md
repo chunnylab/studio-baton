@@ -4,6 +4,16 @@ Notable changes per release. Anything that changes what a studio has to do is
 under **Upgrading**; the rest is grouped by what it affects. Every release back
 to 0.1.0 has an entry, and every tag carries a GitHub release.
 
+## 1.14.2 (2026-10-09)
+
+### Reliability
+
+- **A rate-limited request waits as long as the server asks.** On a 429,
+  every HTTP call now waits for the `Retry-After` the server sent (at most
+  60 s) instead of its own 2 s and 4 s backoff. Notion asked for 18 s
+  during a four-learner batch booking, all three attempts landed inside
+  that window, and one learner was refused while the other three booked.
+
 ## 1.14.1 (2026-10-04)
 
 ### Recorded work
